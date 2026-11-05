@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#102a30">
+  <meta name="description" content="Sturmflut 2027: privater QR-Code-Einlasstest mit Handykamera und lokal importierten CSV-Dateien.">
+  <title>Sturmflut 2027 – Ticket-Scan-Test</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="app">
+    <header class="heading">
+      <div class="kicker">STURMFLUT FESTIVAL · 2027</div>
+      <h1>Ticket-Scan-Test</h1>
+      <p class="lede">Mit der Handykamera scannen – ohne zusätzlichen Scanner.</p>
+      <div class="test-badge">TESTMODUS · keine echten Eintritte</div>
+    </header>
+
+    <section class="panel" aria-labelledby="listHeading">
+      <div class="sectiontop"><h2 id="listHeading">1. Ticketcodes laden</h2><span class="pill" id="importStatus">Noch nicht geladen</span></div>
+      <p>Wähle die <strong>eine kombinierte Test-CSV</strong> oder deine drei bestehenden FLYERALARM-CSV-Dateien aus. Sie bleiben auf diesem Gerät und werden <strong>nicht an den Server gesendet</strong>.</p>
+      <label class="filebutton" for="csvFiles">CSV-Dateien auswählen</label>
+      <input id="csvFiles" type="file" accept=".csv,text/csv" multiple>
+      <div class="stats" aria-label="Geladene Tickets">
+        <div><span id="countAll">0</span><small>gesamt</small></div>
+        <div><span id="countK">0</span><small>Kombi</small></div>
+        <div><span id="countM">0</span><small>Matrosen</small></div>
+        <div><span id="countS">0</span><small>Seemann</small></div>
+      </div>
+      <p id="importNote" class="note" role="status">Importiere die separate 700-Code-Testdatei oder die drei Original-CSV-Dateien.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cameraHeading">
+      <div class="sectiontop"><h2 id="cameraHeading">2. QR-Code scannen</h2></div>
+      <div class="camera-frame" id="cameraFrame">
+        <video id="preview" muted playsinline autoplay></video>
+        <div class="camera-empty" id="cameraEmpty"><span class="camera-symbol">⌗</span><span>Hier erscheint die Handykamera</span></div>
+        <div class="target" aria-hidden="true"></div>
+      </div>
+      <button id="cameraBtn" class="primary" type="button" disabled>Kamera starten</button>
+      <p class="note" id="cameraNote" role="status">Lade zuerst deine Ticketcodes. Die Kamera funktioniert auf einer HTTPS-Webseite in einem unterstützten Browser (z. B. Chrome auf Android).</p>
+      <details class="alternatives"><summary>Alternativ: Bild auswählen oder Code einfügen</summary>
+        <label for="photo">QR-Code als Foto prüfen</label>
+        <input type="file" id="photo" accept="image/*" capture="environment" aria-label="QR-Code fotografieren oder Bild auswählen">
+        <label for="manualCode">Oder die vollständige Ticket-URL einfügen</label>
+        <div class="manual-row"><input id="manualCode" type="text" inputmode="url" spellcheck="false" placeholder="https://sturmflutfestival.de/info/?t=…"><button type="button" id="manualBtn">Prüfen</button></div>
+      </details>
+      <label class="toggle"><input type="checkbox" id="markUsed" checked><span>Bei gültigem Scan <strong>als Testeinlass markieren</strong> (damit der zweite Scan eine Warnung auslöst)</span></label>
+    </section>
+
+    <section class="panel results-panel" aria-labelledby="resultHeading">
+      <h2 id="resultHeading">Ergebnis</h2>
+      <div id="result" class="result idle" role="status" aria-live="polite">
+        <strong>Noch kein Code gescannt</strong><p>Nach dem ersten Scan steht hier die Ticketart und der Status.</p>
+      </div>
+      <div class="stats two">
+        <div><span id="usedCount">0</span><small>Testeinlässe</small></div>
+        <div><span id="duplicateCount">0</span><small>Doppel-Scans</small></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="historyHeading">
+      <div class="sectiontop"><h2 id="historyHeading">Testprotokoll</h2><button id="exportBtn" class="secondary" type="button">CSV exportieren</button></div>
+      <div id="history" class="history"><p class="note">Noch keine Scans vorhanden.</p></div>
+      <button type="button" class="textbutton" id="resetBtn">Testeinlässe und Protokoll zurücksetzen</button>
+      <button type="button" class="textbutton dangertext" id="clearBtn">Importierte Codes von diesem Gerät löschen</button>
+    </section>
+
+    <footer>Prototyp v1 · nur für interne Tests · Daten werden lokal im Browser gespeichert. Kein Ersatz für ein geprüftes Einlasssystem.</footer>
+  </main>
+</body>
+</html>
