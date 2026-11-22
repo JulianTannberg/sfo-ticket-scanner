@@ -216,6 +216,7 @@ async function importCsv(){if(!selectedUrls.length)return;const btn=$('importBtn
 async function init(){
   document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>showTab(el.dataset.tab)));
   $('newOrderForm').addEventListener('submit',createOrder);
+  $('sampleEnvelopeBtn').addEventListener('click',()=>printEnvelope(['Max Mustermann','Musterstraße 12','12345 Musterstadt']));
   $('qrCsv').addEventListener('change',chooseCsv);
   $('importBtn').addEventListener('click',importCsv);
   let timer; $('searchOrders').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>listOrders().catch(err=>alertUser(err.message,'error')),350);});
