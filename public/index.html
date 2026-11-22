@@ -31,7 +31,8 @@
       <div class="formgrid"><label>Telefon (optional)<input name="phone" maxlength="50" autocomplete="tel"></label><label>Interne Notiz<input name="internal_note" maxlength="500" placeholder="Nur intern sichtbar"></label></div>
       <h3>Bestellte Tickets</h3><div class="formgrid three"><label>Kombi<input type="number" name="qty_kombi" min="0" max="100" value="0" required></label><label>Matrosen<input type="number" name="qty_matrosen" min="0" max="100" value="0" required></label><label>Seemann<input type="number" name="qty_seemann" min="0" max="100" value="0" required></label></div>
       <div class="formgrid"><label>Gesamtbetrag in € (inklusive Versand)*<input type="text" inputmode="decimal" name="total_eur" value="0,00" required></label><label>Davon Porto in €<input type="text" inputmode="decimal" name="postage_eur" value="0,00"></label></div>
-      <button class="primary" type="submit" id="createOrderBtn">Bestellung sicher speichern</button>
+      <div class="flexactions"><button class="secondary" type="button" id="sampleEnvelopeBtn">Musterumschlag drucken (ohne Speichern)</button><button class="primary" type="submit" id="createOrderBtn">Bestellung sicher speichern</button></div>
+      <p class="quiet">Der Musterumschlag enthält ausschließlich erfundene Daten. Er legt keine Bestellung an und verändert keine Ticketcodes.</p>
     </form>
   </section>
   <section id="tab-import" class="tabcontent" hidden>
