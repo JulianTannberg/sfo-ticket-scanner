@@ -139,16 +139,63 @@ async function handleApi(request,env,actor){
     return json({orders:rows.results||[]});
   }
   if(method==='GET'&&path==='/api/envelopes'){
-    // Restricted to the verified admin like all API routes. Never expose on public pages.
-    const list=await db.prepare(`SELECT o.id,o.external_order_id,o.shipping_status,
-      c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city
+    const list=await db.prepare(`SELECT o.id,o.external_order_id,o.shipping_status,o.payment_status,
+      o.qty_kombi,o.qty_matrosen,o.qty_seemann,
+      c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,
+      ep.printed_at,ep.packed_at,
+      (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Kombi') AS scanned_kombi,
+      (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Matrosen') AS scanned_matrosen,
+      (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Seemann') AS scanned_seemann
       FROM orders o JOIN customers c ON c.id=o.customer_id
-      WHERE o.shipping_status IN ('not_ready','ready')
+      LEFT JOIN envelope_progress ep ON ep.order_id=o.id
+      WHERE o.shipping_status<>'cancelled'
       ORDER BY c.full_name COLLATE NOCASE,o.created_at,o.id
       LIMIT 2001`).all();
     const rows=list.results||[];
-    if(rows.length>2000)fail(413,'Mehr als 2000 offene Bestellungen. Bitte Druck in Gruppen aufteilen.');
+    if(rows.length>2000)fail(413,'Mehr als 2000 Bestellungen. Bitte zuerst in Gruppen arbeiten.');
     return json({envelopes:rows});
+  }
+  if(method==='POST'&&path==='/api/envelopes/status'){
+    const b=await readBody(request), action=clean(b.action,20);
+    if(!['printed','unprinted','packed','unpacked'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
+    const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
+    if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
+    if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
+    let changed=0;
+    for(const id of ids){
+      if(action==='printed'){
+        // Never treat opening the printer preview as a confirmed print.
+        await db.prepare(`INSERT INTO envelope_progress(order_id,updated_by)
+          SELECT id,? FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready')
+          ON CONFLICT(order_id) DO NOTHING`).bind(actor,id).run();
+        const r=await db.prepare(`UPDATE envelope_progress SET printed_at=CURRENT_TIMESTAMP,updated_by=?
+          WHERE order_id=? AND printed_at IS NULL AND packed_at IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(actor,id,id).run();
+        changed+=r.meta?.changes||0;
+        if(r.meta?.changes)await audit(db,actor,'envelope.printed','order',id).run();
+      }else if(action==='unprinted'){
+        const r=await db.prepare(`UPDATE envelope_progress SET printed_at=NULL,updated_by=?
+          WHERE order_id=? AND printed_at IS NOT NULL AND packed_at IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(actor,id,id).run();
+        changed+=r.meta?.changes||0;
+        if(r.meta?.changes)await audit(db,actor,'envelope.print_reversed','order',id).run();
+      }else if(action==='packed'){
+        const r=await db.prepare(`UPDATE envelope_progress SET packed_at=CURRENT_TIMESTAMP,updated_by=?
+          WHERE order_id=? AND printed_at IS NOT NULL AND packed_at IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready')
+            AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()})`).bind(actor,id,id).run();
+        changed+=r.meta?.changes||0;
+        if(r.meta?.changes)await audit(db,actor,'envelope.packed','order',id).run();
+      }else {
+        const r=await db.prepare(`UPDATE envelope_progress SET packed_at=NULL,updated_by=?
+          WHERE order_id=? AND packed_at IS NOT NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(actor,id,id).run();
+        changed+=r.meta?.changes||0;
+        if(r.meta?.changes)await audit(db,actor,'envelope.unpack_reversed','order',id).run();
+      }
+    }
+    if(!changed)fail(409,'Keine Statusänderung möglich. Bestellung oder Voraussetzung prüfen.');
+    return json({changed,requested:ids.length});
   }
   if(method==='POST'&&path==='/api/orders'){
     const b=await readBody(request), full_name=clean(b.full_name,120);
@@ -271,7 +318,8 @@ async function handleApi(request,env,actor){
       const shipped=status==='sent';
       const res=await db.prepare(`UPDATE orders SET shipping_status=?,shipped_at=(CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE shipped_at END),updated_at=CURRENT_TIMESTAMP
         WHERE id=? AND shipping_status IN ('not_ready','ready') AND payment_status='paid'
-          AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()}`).bind(status,shipped?1:0,id).run();
+          AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()}
+          AND EXISTS(SELECT 1 FROM envelope_progress ep WHERE ep.order_id=orders.id AND ep.packed_at IS NOT NULL)`).bind(status,shipped?1:0,id).run();
       if((res.meta?.changes||0)!==1)fail(409,'Versand nicht möglich: Zahlung oder Ticketzuordnung unvollständig, oder bereits versendet.');
       await audit(db,actor,shipped?'order.sent':'order.ready','order',id).run();
       return json(await getOrder(db,id));
