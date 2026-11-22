@@ -161,19 +161,31 @@ async function handleApi(request,env,actor){
     const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
     if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
     if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
+    if(action==='printed'){
+      // One atomic D1 batch for up to 100 physical print confirmations.
+      // Opening a browser print dialog NEVER changes the database.
+      const marks=ids.map(()=>'?').join(',');
+      const stamp=new Date().toISOString();
+      const batch=await db.batch([
+        db.prepare(`INSERT INTO envelope_progress(order_id,updated_by)
+          SELECT id,? FROM orders WHERE id IN (${marks}) AND shipping_status IN ('not_ready','ready')
+          ON CONFLICT(order_id) DO NOTHING`).bind(actor,...ids),
+        db.prepare(`UPDATE envelope_progress SET printed_at=?,updated_by=?
+          WHERE order_id IN (${marks}) AND printed_at IS NULL AND packed_at IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE orders.id=envelope_progress.order_id
+            AND shipping_status IN ('not_ready','ready'))`).bind(stamp,actor,...ids),
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT lower(hex(randomblob(16))),?,'envelope.printed','order',ep.order_id,'{}'
+          FROM envelope_progress ep WHERE ep.order_id IN (${marks})
+            AND ep.printed_at=? AND ep.updated_by=?`).bind(actor,...ids,stamp,actor)
+      ]);
+      const changed=batch[1].meta?.changes||0;
+      if(!changed)fail(409,'Keine Umschläge bestätigt. Bitte Druckstatus prüfen.');
+      return json({changed,requested:ids.length});
+    }
     let changed=0;
     for(const id of ids){
-      if(action==='printed'){
-        // Never treat opening the printer preview as a confirmed print.
-        await db.prepare(`INSERT INTO envelope_progress(order_id,updated_by)
-          SELECT id,? FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready')
-          ON CONFLICT(order_id) DO NOTHING`).bind(actor,id).run();
-        const r=await db.prepare(`UPDATE envelope_progress SET printed_at=CURRENT_TIMESTAMP,updated_by=?
-          WHERE order_id=? AND printed_at IS NULL AND packed_at IS NULL
-          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(actor,id,id).run();
-        changed+=r.meta?.changes||0;
-        if(r.meta?.changes)await audit(db,actor,'envelope.printed','order',id).run();
-      }else if(action==='unprinted'){
+      if(action==='unprinted'){
         const r=await db.prepare(`UPDATE envelope_progress SET printed_at=NULL,updated_by=?
           WHERE order_id=? AND printed_at IS NOT NULL AND packed_at IS NULL
           AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(actor,id,id).run();
