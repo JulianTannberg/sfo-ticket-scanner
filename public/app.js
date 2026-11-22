@@ -1,0 +1,228 @@
+(()=>{'use strict';
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
+const euro=s=>{s=String(s||'').trim();if(!/^(0|[1-9]\d{0,6})([,.]\d{1,2})?$/.test(s))throw Error('Euro-Betrag ungültig: '+s);const [a,b='']=s.replace(',','.').split('.');return Number(a)*100+Number(b.padEnd(2,'0'));};
+const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
+let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
+const names={Kombi:'Kombi',Matrosen:'Matrosen',Seemann:'Seemann'};
+function alertUser(message,type='warning'){$('systemAlert').textContent=message;$('systemAlert').className='alert '+type;}
+function localState(message,type='warning'){$('detailState').textContent=message;$('detailState').style.color=type==='error'?'#f6a9a2':'#f4dfac';}
+async function api(path,method='GET',body){
+  const opt={method,credentials:'same-origin',headers:{'accept':'application/json'}};
+  if(method!=='GET'){opt.headers['content-type']='application/json';opt.headers['x-sturmknoten']='1';opt.body=JSON.stringify(body||{});}
+  let r;try{r=await fetch(path,opt)}catch{throw Error('Keine Verbindung zum Server. Bitte Internet prüfen.');}
+  let json;try{json=await r.json()}catch{throw Error('Serverantwort unerwartet. Bitte Anmeldung und Verbindung prüfen.');}
+  if(!r.ok)throw Error(json.error||'Fehler '+r.status);
+  return json;
+}
+function showTab(tab){
+  stopCamera();currentTab=tab;
+  document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  document.querySelectorAll('.tabcontent').forEach(e=>e.hidden=e.id!=='tab-'+tab);
+}
+async function overview(){
+  const d=await api('/api/overview');
+  $('countTickets').textContent=d.tickets.reduce((n,r)=>n+Number(r.count),0);
+  $('countAssigned').textContent=d.tickets.filter(r=>r.status==='assigned').reduce((n,r)=>n+Number(r.count),0);
+  $('countOrders').textContent=d.orders?.orders??0;
+  $('countRevenue').textContent=fmt(d.orders?.paid_cents);
+}
+async function listOrders(){
+  const q=$('searchOrders').value.trim();
+  const d=await api('/api/orders?q='+encodeURIComponent(q));orders=d.orders||[];
+  const area=$('orderList');area.replaceChildren();
+  if(!orders.length){area.innerHTML='<p class="quiet">Noch keine passende Bestellung.</p>';return;}
+  for(const o of orders){
+    const btn=document.createElement('button');btn.type='button';btn.className='ordercard'+(current?.order.id===o.id?' selected':'');
+    const expected=o.qty_kombi+o.qty_matrosen+o.qty_seemann;
+    btn.innerHTML=`<strong>${esc(o.full_name)}</strong><small>${esc(o.external_order_id||o.id.slice(0,8))} · ${date(o.created_at)}</small>
+      <span class="tag ${o.payment_status==='paid'?'':'warn'}">${o.payment_status==='paid'?'Bezahlt':o.payment_status==='partial'?'Teilbezahlt':'Zahlung offen'}</span>
+      <span class="tag ${o.shipping_status==='sent'?'':'warn'}">${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</span>
+      <small>${o.assigned_count}/${expected} QR zugeordnet · ${fmt(o.paid_amount_cents)} / ${fmt(o.total_amount_cents)}</small>`;
+    btn.addEventListener('click',()=>selectOrder(o.id));area.append(btn);
+  }
+}
+async function selectOrder(id){
+  stopCamera();
+  try{current=await api('/api/orders/'+encodeURIComponent(id));renderOrder();await listOrders();showTab('orders');}
+  catch(e){alertUser(e.message,'error');}
+}
+function renderOrder(){
+  if(!current)return;
+  const o=current.order,assigned={Kombi:0,Matrosen:0,Seemann:0};
+  for(const t of current.tickets)assigned[t.ticket_type]++;
+  const expected=o.qty_kombi+o.qty_matrosen+o.qty_seemann;
+  const complete=assigned.Kombi===o.qty_kombi&&assigned.Matrosen===o.qty_matrosen&&assigned.Seemann===o.qty_seemann;
+  const paid=o.payment_status==='paid';
+  const sent=o.shipping_status==='sent';
+  const address=[o.full_name,o.address_line1,o.address_line2,[o.postal_code,o.city].filter(Boolean).join(' ')].filter(Boolean);
+  $('orderDetail').innerHTML=`
+    <div class="summary"><div><strong>${esc(o.full_name)}</strong><p class="quiet" style="white-space:pre-line">${esc(address.join('\n'))}</p></div>
+      <div class="pill">${esc(o.external_order_id||o.id.slice(0,8))}</div></div>
+    <div class="details"><div><small>Bestellung</small><strong>${o.qty_kombi} Kombi · ${o.qty_matrosen} Matrosen · ${o.qty_seemann} Seemann</strong></div>
+      <div><small>QR-Codes zugeordnet</small><strong>${current.tickets.length} von ${expected}</strong></div>
+      <div><small>Zahlung</small><strong>${fmt(o.paid_amount_cents)} / ${fmt(o.total_amount_cents)}</strong><small>${esc(o.payment_status)}</small></div>
+      <div><small>Versand</small><strong>${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</strong><small>${date(o.shipped_at)}</small></div></div>
+    <div class="flexactions"><button id="printEnvelope" class="secondary smallbtn" type="button">Briefumschlag drucken</button><button id="editCustomer" class="secondary smallbtn" type="button" ${sent?'disabled':''}>Anschrift korrigieren</button><button id="reopenOrders" type="button" class="secondary smallbtn">Liste aktualisieren</button></div>
+    <hr class="separator"><h3>1. QR-Code vom gedruckten Ticket zuordnen</h3>
+    <p class="quiet">Kombi ${assigned.Kombi}/${o.qty_kombi} · Matrosen ${assigned.Matrosen}/${o.qty_matrosen} · Seemann ${assigned.Seemann}/${o.qty_seemann}</p>
+    ${sent?'<p class="hint">Bereits versendet: keine neue Zuordnung möglich.</p>':`<div class="camera" id="cameraWrap"><video id="cameraView" autoplay muted playsinline></video></div>
+      <div class="flexactions"><button id="cameraToggle" type="button" class="secondary">Handykamera starten</button><label class="secondary smallbtn" for="qrPhoto" style="margin:0">QR-Foto auswählen</label><input id="qrPhoto" type="file" accept="image/*" style="position:absolute;left:-9999px"></div>
+      <label for="assignCode">Oder Ticketkennung / vollständigen QR-Link eingeben</label>
+      <div class="formgrid"><input id="assignCode" placeholder="https://sturmflutfestival.de/info/?t=…" autocapitalize="off" spellcheck="false"><button class="primary" type="button" id="assignNow">Ticket zuordnen</button></div>`}
+    <div class="state" id="detailState" role="status">${complete?'Alle bestellten QR-Codes sind zugeordnet.':'Bitte gedruckte Tickets einscannen.'}</div>
+    <ul class="ticketlist" id="assignedList">${current.tickets.map(t=>`<li><span><b>${esc(t.ticket_type)}</b><br><code>${esc(t.code)}</code></span>${o.shipping_status==='not_ready'?`<button class="danger smallbtn" type="button" data-unassign="${esc(t.code)}">Korrigieren</button>`:''}</li>`).join('')}</ul>
+    <hr class="separator"><h3>2. Zahlung erfassen</h3>
+    <form id="paymentForm"><div class="formgrid"><label>Betrag in €<input name="amount_eur" inputmode="decimal" required placeholder="z. B. 90,00"></label>
+    <label>Zahlungsweg<select name="method"><option value="bank">Überweisung</option><option value="cash">Bar</option><option value="card">Karte</option><option value="other">Sonstiges</option></select></label></div>
+    <div class="formgrid"><label>Art<select name="direction"><option value="received">Zahlung erhalten</option><option value="refunded">Erstattung</option></select></label>
+    <label>Vermerk / Belegnummer<input name="reference" maxlength="100" placeholder="Optional"></label></div>
+    <button class="secondary" type="submit">Zahlung speichern</button></form>
+    <ul class="ticketlist">${current.payments.length?current.payments.map(p=>`<li><span>${date(p.occurred_at)} · ${esc(p.method)} ${esc(p.reference||'')}</span><strong>${p.direction==='received'?'+':'−'}${fmt(p.amount_cents)}</strong></li>`).join(''):'<li class="quiet">Noch keine Zahlungen dokumentiert.</li>'}</ul>
+    <hr class="separator"><h3>3. Versand abschließen</h3>
+    <p class="quiet">Freigabe nur möglich, wenn der Betrag vollständig bezahlt und alle QR-Codes zugeordnet sind.</p>
+    <div class="flexactions"><button id="readyBtn" class="secondary" ${!complete||!paid||sent?'disabled':''}>Als versandbereit markieren</button>
+    <button id="sentBtn" class="primary" ${!complete||!paid||sent?'disabled':''}>Als versendet bestätigen</button></div>
+    ${o.internal_note?`<p class="quiet">Interne Notiz: ${esc(o.internal_note)}</p>`:''}`;
+  $('printEnvelope').addEventListener('click',()=>printEnvelope(address));
+  $('editCustomer').addEventListener('click',editCustomer);
+  $('reopenOrders').addEventListener('click',()=>refreshCurrent());
+  if(!sent){
+    $('assignNow').addEventListener('click',assignManual);
+    $('assignCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();assignManual();}});
+    $('cameraToggle').addEventListener('click',toggleCamera);
+    $('qrPhoto').addEventListener('change',async e=>{const file=e.target.files[0];if(file)await scanPhoto(file);e.target.value='';});
+    document.querySelectorAll('[data-unassign]').forEach(b=>b.addEventListener('click',()=>unassign(b.dataset.unassign)));
+  }
+  $('paymentForm').addEventListener('submit',savePayment);
+  $('readyBtn').addEventListener('click',()=>dispatch('ready'));
+  $('sentBtn').addEventListener('click',()=>dispatch('sent'));
+}
+async function refreshCurrent(){if(!current)return;const id=current.order.id;current=await api('/api/orders/'+id);renderOrder();await Promise.all([listOrders(),overview()]);}
+async function assignManual(){const code=$('assignCode').value.trim();if(!code){localState('Zuerst einen QR-Code scannen oder einfügen.','error');return;}await assign(code);}
+async function assign(code){
+  if(!current)return;stopCamera();
+  const id=current.order.id;
+  try{const updated=await api('/api/orders/'+id+'/assign','POST',{code});current=updated;renderOrder();localState('Ticket erfolgreich diesem Käufer zugeordnet.');await Promise.all([listOrders(),overview()]);}
+  catch(e){localState(e.message,'error');}
+}
+async function editCustomer(){
+  if(!current)return;
+  const o=current.order;
+  const fieldNames=[['full_name','Name'],['address_line1','Straße/Hausnummer'],['address_line2','Adresszusatz'],['postal_code','PLZ'],['city','Ort'],['email','E-Mail'],['phone','Telefon']];
+  const section=document.createElement('div');section.className='box';
+  const h=document.createElement('h3');h.textContent='Lieferanschrift korrigieren';section.append(h);
+  const form=document.createElement('form');form.id='editCustomerForm';
+  for(const [name,label] of fieldNames){const l=document.createElement('label');l.textContent=label;const inp=document.createElement('input');inp.name=name;inp.value=o[name]||'';l.append(inp);form.append(l);}
+  const button=document.createElement('button');button.className='secondary';button.type='submit';button.textContent='Änderungen speichern';form.append(button);section.append(form);
+  $('orderDetail').insertBefore(section,$('orderDetail').querySelector('.separator'));
+  $('editCustomer').disabled=true;
+  form.addEventListener('submit',async e=>{e.preventDefault();button.disabled=true;
+    const data=Object.fromEntries(new FormData(form));
+    try{current=await api('/api/orders/'+o.id+'/customer','POST',data);renderOrder();localState('Anschrift wurde geändert.');await listOrders();}
+    catch(err){localState(err.message,'error');button.disabled=false;}
+  });
+}
+async function unassign(code){
+  if(!confirm('Dieses Ticket wirklich von der Bestellung lösen? Der Vorgang wird protokolliert.'))return;
+  try{current=await api('/api/orders/'+current.order.id+'/unassign','POST',{code});renderOrder();localState('Ticket-Zuordnung korrigiert.');await Promise.all([listOrders(),overview()]);}
+  catch(e){localState(e.message,'error');}
+}
+async function savePayment(e){
+  e.preventDefault();const form=e.currentTarget;
+  let amount;try{amount=euro(new FormData(form).get('amount_eur'));if(!amount)throw Error('Betrag muss größer als 0 sein.');}
+  catch(err){localState(err.message,'error');return;}
+  const f=new FormData(form),id= form.dataset.pendingId || crypto.randomUUID();form.dataset.pendingId=id;
+  const button=form.querySelector('button[type=submit]');button.disabled=true;
+  try{current=await api('/api/orders/'+current.order.id+'/payment','POST',{idempotency_key:id,amount_cents:amount,method:f.get('method'),direction:f.get('direction'),reference:f.get('reference')});
+    renderOrder();localState('Zahlung ist gespeichert und dem Käufer zugeordnet.');await Promise.all([listOrders(),overview()]);}
+  catch(err){localState(err.message,'error');button.disabled=false;}
+}
+async function dispatch(status){
+  if(!confirm(status==='sent'?'Sind Tickets und Umschlag wirklich versendet worden?':'Sind alle Tickets geprüft und die Sendung versandbereit?'))return;
+  try{current=await api('/api/orders/'+current.order.id+'/dispatch','POST',{status});renderOrder();localState(status==='sent'?'Versand mit Datum dauerhaft gespeichert.':'Bestellung ist versandbereit.');await listOrders();}
+  catch(e){localState(e.message,'error');}
+}
+function printEnvelope(lines){
+  if(!lines[0]||lines.length<3){localState('Anschrift unvollständig.','error');return;}
+  const sheet=$('printArea');sheet.textContent=lines.join('\n');
+  window.print();
+}
+async function toggleCamera(){if(cameraStream){stopCamera();return;}
+  if(!('BarcodeDetector' in window)){localState('Dieser Browser unterstützt die QR-Kameraerkennung nicht. Bitte Chrome auf Android verwenden oder Code manuell eingeben.','error');return;}
+  try{
+    const formats=await BarcodeDetector.getSupportedFormats();if(!formats.includes('qr_code'))throw Error('QR-Erkennung nicht unterstützt.');
+    detector=new BarcodeDetector({formats:['qr_code']});
+    cameraStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'}}});
+    const video=$('cameraView');video.srcObject=cameraStream;await video.play();$('cameraWrap').classList.add('active');$('cameraToggle').textContent='Kamera stoppen';
+    scanBusy=false;scanLast=0;frame=requestAnimationFrame(scanLoop);
+    localState('QR-Code vom gedruckten Ticket in den Rahmen halten.');
+  }catch(e){stopCamera();localState('Kamera nicht verfügbar: '+e.message,'error');}
+}
+function stopCamera(){if(frame)cancelAnimationFrame(frame);frame=0;
+  if(cameraStream){for(const track of cameraStream.getTracks())track.stop();cameraStream=null;}
+  const view=$('cameraView');if(view)view.srcObject=null;
+  const wrap=$('cameraWrap');if(wrap)wrap.classList.remove('active');
+  const toggle=$('cameraToggle');if(toggle)toggle.textContent='Handykamera starten';
+}
+async function scanLoop(t){
+  if(!cameraStream)return;frame=requestAnimationFrame(scanLoop);
+  if(scanBusy||t-scanLast<230)return;
+  const video=$('cameraView');if(!video||video.readyState<2)return;
+  scanBusy=true;scanLast=t;
+  try{const result=await detector.detect(video);const found=result?.find(x=>x.rawValue)?.rawValue;if(found){stopCamera();await assign(found);}}
+  catch(e){localState('Scan fehlgeschlagen: '+e.message,'error');stopCamera();}
+  finally{scanBusy=false;}
+}
+async function scanPhoto(file){
+  if(!('BarcodeDetector' in window)){localState('QR-Fotoerkennung von diesem Browser nicht unterstützt.','error');return;}
+  try{const detector=new BarcodeDetector({formats:['qr_code']});const bitmap=await createImageBitmap(file);const results=await detector.detect(bitmap);bitmap.close();
+    if(results.length&&results[0].rawValue)await assign(results[0].rawValue);
+    else localState('Auf dem Bild wurde kein QR-Code gefunden.','error');
+  }catch(e){localState('Bild konnte nicht verarbeitet werden: '+e.message,'error');}
+}
+async function createOrder(e){
+  e.preventDefault();const form=e.currentTarget;const f=new FormData(form);let data;
+  try{data={};for(const [key,val]of f)data[key]=String(val).trim();
+    data.qty_kombi=Number(data.qty_kombi);data.qty_matrosen=Number(data.qty_matrosen);data.qty_seemann=Number(data.qty_seemann);
+    data.total_amount_cents=euro(data.total_eur);data.postage_cents=euro(data.postage_eur);
+    if(data.qty_kombi+data.qty_matrosen+data.qty_seemann<1)throw Error('Mindestens ein Ticket auswählen.');
+  }catch(err){alertUser(err.message,'error');return;}
+  const btn=$('createOrderBtn');btn.disabled=true;
+  try{const result=await api('/api/orders','POST',data);form.reset();
+    alertUser('Bestellung gespeichert. Jetzt gedruckte Tickets dem Käufer zuordnen.','success');await Promise.all([listOrders(),overview()]);current=result;renderOrder();showTab('orders');await listOrders();}
+  catch(err){alertUser(err.message,'error');}finally{btn.disabled=false;}
+}
+function csvUrls(text){
+  const all=text.match(/https:\/\/sturmflutfestival\.de\/info\/\?t=[A-Za-z0-9]+/g)||[];
+  return [...new Set(all)];
+}
+async function chooseCsv(e){selectedUrls=[];$('importBtn').disabled=true;
+  const file=e.target.files[0];if(!file)return;
+  if(file.size>3000000){$('importState').textContent='Datei zu groß.';return;}
+  const text=await file.text();const list=csvUrls(text);
+  selectedUrls=list;$('importBtn').disabled=!list.length;
+  $('importState').textContent=list.length?`${list.length} unterschiedliche QR-Links gefunden. Bitte mit der Masterliste vergleichen, bevor du importierst.`:'Keine passenden QR-Links gefunden. Bitte die Original-CSV verwenden.';
+}
+async function importCsv(){if(!selectedUrls.length)return;const btn=$('importBtn');btn.disabled=true;
+  let added=0;
+  try{for(let i=0;i<selectedUrls.length;i+=100){
+    const b=selectedUrls.slice(i,i+100);const r=await api('/api/tickets/import','POST',{urls:b});added+=r.added;
+    $('importState').textContent=`${Math.min(i+100,selectedUrls.length)} von ${selectedUrls.length} verarbeitet · ${added} neu angelegt · Gesamtbestand ${r.total}`;
+  }selectedUrls=[];await overview();alertUser('Ticketimport abgeschlossen. Bitte Bestandszahl und echten QR-Code prüfen.','success');}
+  catch(e){$('importState').textContent=`Import unterbrochen: ${e.message}. Bereits importierte Codes werden beim erneuten Versuch nicht doppelt angelegt.`;btn.disabled=false;}
+}
+async function init(){
+  document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>showTab(el.dataset.tab)));
+  $('newOrderForm').addEventListener('submit',createOrder);
+  $('qrCsv').addEventListener('change',chooseCsv);
+  $('importBtn').addEventListener('click',importCsv);
+  let timer; $('searchOrders').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>listOrders().catch(err=>alertUser(err.message,'error')),350);});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();});window.addEventListener('pagehide',stopCamera);
+  try{const who=await api('/api/me');
+    $('mainApp').hidden=false;alertUser('Geschützt angemeldet. Verwaltung: '+who.email,'success');await Promise.all([overview(),listOrders()]);}
+  catch(e){alertUser('Verwaltung noch nicht freigeschaltet: '+e.message+' Bitte keine echten Kundendaten eingeben.','error');}
+}
+init();
+})();
