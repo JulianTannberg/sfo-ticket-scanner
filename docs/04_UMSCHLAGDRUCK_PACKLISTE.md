@@ -11,20 +11,17 @@
 
 Status: **Nicht gedruckt**, **Gedruckt**, **Verpackt**, **Versendet**. Ein tatsächlicher Druck lässt sich aus dem Browser nicht sicher feststellen, deshalb ist die Bestätigung manuell und korrigierbar.
 
-## Einmalige D1-Erweiterung – noch auszuführen
+## Packlisten-Datenbank
 
-Datei: [03_D1_KONSOLE_UMSCHLAEGE.sql](./03_D1_KONSOLE_UMSCHLAEGE.sql)
+Die App richtet die Tabelle `envelope_progress` beim ersten geschützten Zugriff auf die Packliste selbst ein (`CREATE TABLE IF NOT EXISTS`). Bestehende Bestellungen und QR-Codes werden dabei nicht verändert.
 
-In Cloudflare > D1 SQL Database > sturmknoten-2027-db > Console einmal ausführen. Die SQL-Datei verwendet CREATE TABLE IF NOT EXISTS, verändert keine alten Datensätze und benötigt die bisherigen Tabellen.
-Kontrolle mit `/tables`: Tabelle `envelope_progress`.
-
-**Bis dahin den neuen Sammeldruck nicht mit echten Kundendaten verwenden.**
+Die SQL-Datei `03_D1_KONSOLE_UMSCHLAEGE.sql` bleibt als manuelle Fallback-Lösung erhalten, muss für den normalen Test jedoch nicht mehr in die Cloudflare-Konsole kopiert werden.
 
 ## Getestet
 
 - JavaScript-Syntax von Backend und Frontend kontrolliert.
 - SQLite-Szenariotests: Sammeldruck-Audit, keine Bestätigung einer bereits versendeten Bestellung, Verpackungsbestätigung scheitert bei fehlenden Tickets, funktioniert bei vollständig gescannten Tickets.
-- **Noch nicht getestet:** Produktions-D1 mit Erweiterung; Cloudflare-Zugang nach Deploy; browserbasierter Sammeldruck mit Epson ET-2865, echte DL-Umschläge; Scan mit dem Handy.
+- **Noch zu prüfen:** automatische Packlisten-Anlage auf Produktions-D1, Test-Druckbestätigung, Verpackungsbutton und anschließendes Freigeben des Matrosen-Tickets nach Testbestellung-Löschung; echter Sammeldruck mit Epson ET-2865 und DL-Umschlägen.
 
 ## Nicht Teil dieser Ergänzung
 
@@ -41,5 +38,5 @@ Die 700 gedruckten Ticketcodes bleiben unverändert. Sammeldruck/Verpackung lös
 - Der Datensatz trägt die interne Kennung `internal_test`; normale Bestellungen können diesen Kennwert nicht setzen.
 - Der Test kann ein echtes, noch unvergebenes QR-Ticket vorübergehend zuordnen. Vor dem nächsten Live-Verkauf unbedingt wieder die Testbestellung löschen und den Zähler auf 0 prüfen.
 - Die Löschfunktion ist ausschließlich für diese Demo-Bestellung freigegeben; sie löst ihre Ticketzuordnungen und entfernt den fiktiven Kunden. Die 700 importierten QR-Codes bleiben bestehen. Zahlungs-, Versand- und Einlassdaten blockieren die automatische Löschung.
-- Die vollständige Verpackungsprüfung benötigt weiterhin die noch auszuführende D1-Erweiterung `03_D1_KONSOLE_UMSCHLAEGE.sql`.
+- Der geschützte Zugriff auf die Packliste richtet die Zusatz-Tabelle automatisch ein; im Testdatensatz lässt sich der Druckstatus ohne Papier simulieren (ein echter Druckstatus darf nur nach Kontrolle bestätigt werden).
 - **Code geprüft, aber Produktionsablauf mit echten Mobilgeräten nach diesem Update noch nicht getestet.**
