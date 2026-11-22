@@ -56,6 +56,8 @@ function renderOrder(){
   if(!current)return;
   const o=current.order,assigned={Kombi:0,Matrosen:0,Seemann:0};
   const ep=envelopeBatch.find(e=>e.id===o.id);
+  const isDemo=o.sales_channel==='internal_test'&&o.internal_note==='SYSTEMTEST - keine echte Bestellung';
+  const packReady=Boolean(ep?.packed_at);
   for(const t of current.tickets)assigned[t.ticket_type]++;
   const expected=o.qty_kombi+o.qty_matrosen+o.qty_seemann;
   const complete=assigned.Kombi===o.qty_kombi&&assigned.Matrosen===o.qty_matrosen&&assigned.Seemann===o.qty_seemann;
@@ -69,8 +71,10 @@ function renderOrder(){
       <div><small>QR-Codes zugeordnet</small><strong>${current.tickets.length} von ${expected}</strong></div>
       <div><small>Zahlung</small><strong>${fmt(o.paid_amount_cents)} / ${fmt(o.total_amount_cents)}</strong><small>${esc(o.payment_status)}</small></div>
       <div><small>Versand</small><strong>${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</strong><small>${date(o.shipped_at)}</small></div>
-      <div><small>Umschlag / Verpackung</small><strong>${ep?esc(envelopeStatus(ep)):'Packliste noch nicht eingerichtet'}</strong></div></div>
-      ${ep&&ep.printed_at&&!ep.packed_at&&o.shipping_status!=='sent'?'<div class="flexactions"><button type="button" id="packedDetailBtn" class="secondary smallbtn" '+(!envelopeDone(ep)?'disabled title="Zuerst alle Tickets einscannen"':'')+'>Umschlag vollständig verpackt</button></div>':''}
+      <div><small>Umschlag / Verpackung</small><strong>${ep?esc(isDemo&&ep.printed_at&&!ep.packed_at?'TEST: Umschlagdruck simuliert':envelopeStatus(ep)):'Packliste wird eingerichtet'}</strong></div></div>
+      ${isDemo&&ep&&!ep.printed_at?'<div class="box"><p class="quiet">Nur für diesen Test: Du brauchst keinen echten Umschlag. Wir simulieren den Druckstatus.</p><button type="button" id="demoPrintBtn" class="secondary">TEST: Umschlagdruck simulieren</button></div>':''}
+      ${ep&&ep.printed_at&&!ep.packed_at&&o.shipping_status!=='sent'?'<div class="box"><p class="quiet">Die richtigen Tickets sind '+(complete?'vollständig zugeordnet.':'noch nicht alle eingescannt.')+'</p><button type="button" id="packedDetailBtn" class="primary" '+(!envelopeDone(ep)?'disabled title="Zuerst alle Tickets einscannen"':'')+'>Vollständig verpackt bestätigen</button></div>':''}
+      ${ep&&ep.packed_at?'<p class="hint">✓ Umschlag vollständig verpackt bestätigt.</p>':''}
     ${o.sales_channel==='internal_test'?'<div class="box"><p><strong>TESTBESTELLUNG.</strong> Diese Musteradresse ist erfunden. Ein hier zugeordnetes echtes Ticket ist bis zum Löschen vorübergehend nicht mehr frei. <strong>Vor dem Abschluss wieder löschen!</strong></p><button id="deleteTestOrderBtn" type="button" class="danger">Testbestellung löschen und Ticket freigeben</button></div>':''}
     <div class="flexactions"><button id="printEnvelope" class="secondary smallbtn" type="button">Briefumschlag drucken</button><button id="editCustomer" class="secondary smallbtn" type="button" ${sent?'disabled':''}>Anschrift korrigieren</button><button id="reopenOrders" type="button" class="secondary smallbtn">Liste aktualisieren</button></div>
     <hr class="separator"><h3>1. QR-Code vom gedruckten Ticket zuordnen</h3>
@@ -89,13 +93,14 @@ function renderOrder(){
     <button class="secondary" type="submit">Zahlung speichern</button></form>
     <ul class="ticketlist">${current.payments.length?current.payments.map(p=>`<li><span>${date(p.occurred_at)} · ${esc(p.method)} ${esc(p.reference||'')}</span><strong>${p.direction==='received'?'+':'−'}${fmt(p.amount_cents)}</strong></li>`).join(''):'<li class="quiet">Noch keine Zahlungen dokumentiert.</li>'}</ul>
     <hr class="separator"><h3>3. Versand abschließen</h3>
-    <p class="quiet">Freigabe nur möglich, wenn der Betrag vollständig bezahlt und alle QR-Codes zugeordnet sind.</p>
-    <div class="flexactions"><button id="readyBtn" class="secondary" ${!complete||!paid||sent?'disabled':''}>Als versandbereit markieren</button>
-    <button id="sentBtn" class="primary" ${!complete||!paid||sent?'disabled':''}>Als versendet bestätigen</button></div>
+    <p class="quiet">Freigabe erst nach vollständiger Zahlung, allen gescannten Tickets und bestätigter Verpackung.</p>
+    <div class="flexactions"><button id="readyBtn" class="secondary" ${!complete||!paid||!packReady||sent?'disabled':''}>Als versandbereit markieren</button>
+    <button id="sentBtn" class="primary" ${!complete||!paid||!packReady||sent?'disabled':''}>Als versendet bestätigen</button></div>
     ${o.internal_note?`<p class="quiet">Interne Notiz: ${esc(o.internal_note)}</p>`:''}`;
   $('printEnvelope').addEventListener('click',()=>printEnvelope(address));
   if($('deleteTestOrderBtn'))$('deleteTestOrderBtn').addEventListener('click',deleteTestOrder);
   if($('packedDetailBtn'))$('packedDetailBtn').addEventListener('click',()=>setEnvelopeStatus('packed',[o.id]));
+  if($('demoPrintBtn'))$('demoPrintBtn').addEventListener('click',()=>setEnvelopeStatus('demo_printed',[o.id]));
   $('editCustomer').addEventListener('click',editCustomer);
   $('reopenOrders').addEventListener('click',()=>refreshCurrent());
   if(!sent){
@@ -109,12 +114,14 @@ function renderOrder(){
   $('readyBtn').addEventListener('click',()=>dispatch('ready'));
   $('sentBtn').addEventListener('click',()=>dispatch('sent'));
 }
-async function refreshCurrent(){if(!current)return;const id=current.order.id;current=await api('/api/orders/'+id);renderOrder();await Promise.all([listOrders(),overview()]);}
+async function refreshCurrent(){if(!current)return;const id=current.order.id;current=await api('/api/orders/'+id);try{const p=await api('/api/envelopes');envelopeBatch=p.envelopes||[];}catch{}renderOrder();await Promise.all([listOrders(),overview()]);}
 async function assignManual(){const code=$('assignCode').value.trim();if(!code){localState('Zuerst einen QR-Code scannen oder einfügen.','error');return;}await assign(code);}
 async function assign(code){
   if(!current)return;stopCamera();
   const id=current.order.id;
-  try{const updated=await api('/api/orders/'+id+'/assign','POST',{code});current=updated;renderOrder();localState('Ticket erfolgreich diesem Käufer zugeordnet.');await Promise.all([listOrders(),overview()]);}
+  try{const updated=await api('/api/orders/'+id+'/assign','POST',{code});current=updated;
+    try{const pack=await api('/api/envelopes');envelopeBatch=pack.envelopes||[];}catch{/* Show QR success even if packing data is temporarily unavailable. */}
+    renderOrder();localState('Ticket erfolgreich zugeordnet. Wenn alle Mengen stimmen, die Verpackung bestätigen.');await Promise.all([listOrders(),overview()]);}
   catch(e){localState(e.message,'error');}
 }
 async function editCustomer(){
@@ -243,6 +250,7 @@ function renderEnvelopeQueue(){
 }
 async function setEnvelopeStatus(action,ids){
   const questions={
+    demo_printed:'Nur TEST: Soll der Druckstatus für Max Mustermann simuliert werden? Es wird nichts ausgedruckt und kein echtes Ticket verändert.',
     printed:'Hast du die ausgewählten Umschläge tatsächlich ausgedruckt und kontrolliert? Nur diese werden als gedruckt gespeichert.',
     unprinted:'Diesen Umschlag wieder als NICHT gedruckt markieren?',
     packed:'Sind die angezeigten Tickets vollständig im richtigen Umschlag? Dann als verpackt markieren.',
