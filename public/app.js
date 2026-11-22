@@ -5,6 +5,7 @@ const fmt=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currenc
 const euro=s=>{s=String(s||'').trim();if(!/^(0|[1-9]\d{0,6})([,.]\d{1,2})?$/.test(s))throw Error('Euro-Betrag ungültig: '+s);const [a,b='']=s.replace(',','.').split('.');return Number(a)*100+Number(b.padEnd(2,'0'));};
 const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
 let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
+let envelopeBatch=[],printPreviewIds=[],envelopeSelection=new Set();
 const names={Kombi:'Kombi',Matrosen:'Matrosen',Seemann:'Seemann'};
 function alertUser(message,type='warning'){$('systemAlert').textContent=message;$('systemAlert').className='alert '+type;}
 function localState(message,type='warning'){$('detailState').textContent=message;$('detailState').style.color=type==='error'?'#f6a9a2':'#f4dfac';}
@@ -144,11 +145,133 @@ async function dispatch(status){
   try{current=await api('/api/orders/'+current.order.id+'/dispatch','POST',{status});renderOrder();localState(status==='sent'?'Versand mit Datum dauerhaft gespeichert.':'Bestellung ist versandbereit.');await listOrders();}
   catch(e){localState(e.message,'error');}
 }
-function printEnvelope(lines){
-  if(!lines[0]||lines.length<3){localState('Anschrift unvollständig.','error');return;}
-  const sheet=$('printArea');sheet.textContent=lines.join('\n');
+function printPages(addresses){
+  // Personal addresses are inserted exclusively with textContent.
+  const sheet=$('printArea');sheet.replaceChildren();
+  for(const lines of addresses){
+    const page=document.createElement('div');page.className='envelope-page';
+    const label=document.createElement('div');label.className='envelope-address';
+    label.textContent=lines.filter(Boolean).join('\n');
+    page.append(label);sheet.append(page);
+  }
   window.print();
 }
+function printEnvelope(lines){
+  if(!lines[0]||lines.length<3){localState('Anschrift unvollständig.','error');return;}
+  printPages([lines]);
+}
+const envelopeLines=e=>[e.full_name,e.address_line1,e.address_line2,[e.postal_code,e.city].filter(Boolean).join(' ')].filter(Boolean);
+function envelopeDone(e){return Number(e.scanned_kombi)===Number(e.qty_kombi)&&Number(e.scanned_matrosen)===Number(e.qty_matrosen)&&Number(e.scanned_seemann)===Number(e.qty_seemann)
+  &&Number(e.qty_kombi)+Number(e.qty_matrosen)+Number(e.qty_seemann)>0;}
+function envelopeStatus(e){
+  if(e.shipping_status==='sent'||e.shipping_status==='handed_over')return 'Versendet';
+  if(e.packed_at)return 'Verpackt · noch nicht versendet';
+  if(e.printed_at)return 'Gedruckt · Tickets fehlen noch';
+  return 'Nicht gedruckt';
+}
+async function loadEnvelopeBatch(){
+  $('bulkState').textContent='Bestellungen werden geladen …';
+  try{
+    const data=await api('/api/envelopes');
+    envelopeBatch=data.envelopes||[];
+    printPreviewIds=[];envelopeSelection=new Set(envelopeBatch.filter(e=>!e.printed_at&&['not_ready','ready'].includes(e.shipping_status)).map(e=>e.id));
+    renderEnvelopeQueue();
+  }catch(e){
+    $('bulkState').textContent='Packliste momentan nicht verfügbar: '+e.message;
+    $('printAllEnvelopes').disabled=true;
+    $('confirmEnvelopePrinted').disabled=true;
+  }
+}
+function renderEnvelopeQueue(){
+  const pending=envelopeBatch.filter(e=>!e.printed_at&&['not_ready','ready'].includes(e.shipping_status));
+  const printed=envelopeBatch.filter(e=>e.printed_at&&!e.packed_at&&['not_ready','ready'].includes(e.shipping_status));
+  const packed=envelopeBatch.filter(e=>e.packed_at&&['not_ready','ready'].includes(e.shipping_status));
+  const shipped=envelopeBatch.filter(e=>e.shipping_status==='sent'||e.shipping_status==='handed_over');
+  $('bulkState').textContent=pending.length+' nicht gedruckt · '+printed.length+' gedruckt · '+packed.length+' verpackt · '+shipped.length+' versendet';
+  $('printAllEnvelopes').disabled=!pending.length||!pending.some(e=>envelopeSelection.has(e.id));
+  $('selectPendingEnvelopes').disabled=!pending.length;
+  $('clearEnvelopeSelection').disabled=!pending.length;
+  $('confirmEnvelopePrinted').disabled=!printPreviewIds.length;
+  const list=$('envelopeList');list.replaceChildren();
+  if(!envelopeBatch.length){list.innerHTML='<p class="quiet">Noch keine Bestellungen vorhanden.</p>';return;}
+  for(const e of envelopeBatch){
+    const canPrint=!e.printed_at&&['not_ready','ready'].includes(e.shipping_status);
+    const hasPrinted=!!e.printed_at, hasPacked=!!e.packed_at;
+    const isActive=['not_ready','ready'].includes(e.shipping_status);
+    const item=document.createElement('div');item.className='envelope-item';
+    item.innerHTML=`<div class="summary">
+      <div><strong>${esc(e.full_name)}</strong> <small>${esc(e.external_order_id||e.id.slice(0,8))}</small></div>
+      <span class="tag ${hasPacked||e.shipping_status==='sent'?'':'warn'}">${esc(envelopeStatus(e))}</span>
+      </div>
+      <div class="quiet">Kombi ${Number(e.scanned_kombi)}/${Number(e.qty_kombi)} · Matrosen ${Number(e.scanned_matrosen)}/${Number(e.qty_matrosen)} · Seemann ${Number(e.scanned_seemann)}/${Number(e.qty_seemann)}</div>`;
+    const actions=document.createElement('div');actions.className='flexactions';
+    if(canPrint){
+      const label=document.createElement('label');label.className='printselect';
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=envelopeSelection.has(e.id);
+      cb.addEventListener('change',()=>{
+        if(cb.checked)envelopeSelection.add(e.id);else envelopeSelection.delete(e.id);
+        $('printAllEnvelopes').disabled=!envelopeBatch.some(x=>!x.printed_at&&envelopeSelection.has(x.id));
+      });
+      label.append(cb,document.createTextNode(' Zum Druck / zur Druckbestätigung auswählen'));actions.append(label);
+    }
+    const open=document.createElement('button');open.type='button';open.className='secondary smallbtn';open.textContent='Bestellung öffnen';
+    open.addEventListener('click',()=>selectOrder(e.id));actions.append(open);
+    if(isActive&&hasPrinted&&!hasPacked){
+      const undo=document.createElement('button');undo.type='button';undo.className='secondary smallbtn';undo.textContent='Druckstatus korrigieren';
+      undo.addEventListener('click',()=>setEnvelopeStatus('unprinted',[e.id]));
+      actions.append(undo);
+      const pack=document.createElement('button');pack.type='button';pack.className='primary smallbtn';pack.textContent='Verpackt bestätigen';
+      pack.disabled=!envelopeDone(e);
+      pack.title=pack.disabled?'Zuerst alle gedruckten Tickets für diese Bestellung einscannen':'Umschlag ist vollständig';
+      pack.addEventListener('click',()=>setEnvelopeStatus('packed',[e.id]));
+      actions.append(pack);
+    }else if(isActive&&hasPacked){
+      const undo=document.createElement('button');undo.type='button';undo.className='secondary smallbtn';undo.textContent='Verpackung korrigieren';
+      undo.addEventListener('click',()=>setEnvelopeStatus('unpacked',[e.id]));actions.append(undo);
+    }
+    item.append(actions);list.append(item);
+  }
+}
+async function setEnvelopeStatus(action,ids){
+  const questions={
+    printed:'Hast du die ausgewählten Umschläge tatsächlich ausgedruckt und kontrolliert? Nur diese werden als gedruckt gespeichert.',
+    unprinted:'Diesen Umschlag wieder als NICHT gedruckt markieren?',
+    packed:'Sind die angezeigten Tickets vollständig im richtigen Umschlag? Dann als verpackt markieren.',
+    unpacked:'Diesen Umschlag wieder als NICHT verpackt markieren?'
+  };
+  if(!confirm(questions[action]))return;
+  try{
+    const r=await api('/api/envelopes/status','POST',{action,ids});
+    alertUser(r.changed+' Umschlag-Status geändert.','success');
+    await Promise.all([loadEnvelopeBatch(),listOrders()]);
+  }catch(e){alertUser('Status nicht gespeichert: '+e.message,'error');}
+}
+function printSelectedEnvelopes(){
+  const selected=envelopeBatch.filter(e=>!e.printed_at&&envelopeSelection.has(e.id)&&['not_ready','ready'].includes(e.shipping_status));
+  if(!selected.length)return;
+  if(selected.some(e=>!e.full_name||!e.address_line1||!e.postal_code||!e.city)){
+    $('bulkState').textContent='Mindestens eine Versandanschrift ist unvollständig. Bitte korrigieren.';return;
+  }
+  printPreviewIds=selected.map(e=>e.id);
+  $('confirmEnvelopePrinted').disabled=false;
+  printPages(selected.map(envelopeLines));
+  $('bulkState').textContent=selected.length+' Umschläge im Druckauftrag. Nach dem Druck fehlende Umschläge abwählen und NUR tatsächlich gedruckte bestätigen.';
+}
+async function confirmPrintedEnvelopes(){
+  const selected=printPreviewIds.filter(id=>envelopeSelection.has(id));
+  if(!selected.length){$('bulkState').textContent='Kein Umschlag ausgewählt. Fehlende Umschläge bleiben offen.';return;}
+  if(!confirm('Sind diese '+selected.length+' Umschläge WIRKLICH aus dem Drucker gekommen? Andere Umschläge bleiben offen.'))return;
+  try{
+    let changed=0;
+    for(let i=0;i<selected.length;i+=100){
+      const result=await api('/api/envelopes/status','POST',{action:'printed',ids:selected.slice(i,i+100)});
+      changed+=result.changed;
+    }
+    alertUser(changed+' Umschläge als gedruckt bestätigt. Nicht gedruckte bleiben offen.','success');
+    await loadEnvelopeBatch();
+  }catch(e){alertUser('Nicht alle Druckbestätigungen abgeschlossen: '+e.message,'error');await loadEnvelopeBatch();}
+}
+
 async function toggleCamera(){if(cameraStream){stopCamera();return;}
   if(!('BarcodeDetector' in window)){localState('Dieser Browser unterstützt die QR-Kameraerkennung nicht. Bitte Chrome auf Android verwenden oder Code manuell eingeben.','error');return;}
   try{
@@ -217,6 +340,16 @@ async function init(){
   document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>showTab(el.dataset.tab)));
   $('newOrderForm').addEventListener('submit',createOrder);
   $('sampleEnvelopeBtn').addEventListener('click',()=>printEnvelope(['Max Mustermann','Musterstraße 12','12345 Musterstadt']));
+  $('checkEnvelopes').addEventListener('click',loadEnvelopeBatch);
+  $('printAllEnvelopes').addEventListener('click',printSelectedEnvelopes);
+  $('confirmEnvelopePrinted').addEventListener('click',confirmPrintedEnvelopes);
+  $('selectPendingEnvelopes').addEventListener('click',()=>{envelopeSelection=new Set(envelopeBatch.filter(e=>!e.printed_at&&['not_ready','ready'].includes(e.shipping_status)).map(e=>e.id));renderEnvelopeQueue();});
+  $('clearEnvelopeSelection').addEventListener('click',()=>{envelopeSelection.clear();renderEnvelopeQueue();});
+  $('printThreeSamples').addEventListener('click',()=>printPages([
+    ['Max Mustermann','Musterstraße 12','12345 Musterstadt'],
+    ['Erika Beispiel','Beispielweg 4','23456 Beispielort'],
+    ['Alex Demokunde','Probegasse 8','34567 Testhausen']
+  ]));
   $('qrCsv').addEventListener('change',chooseCsv);
   $('importBtn').addEventListener('click',importCsv);
   let timer; $('searchOrders').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>listOrders().catch(err=>alertUser(err.message,'error')),350);});
