@@ -109,6 +109,25 @@ function orderCompleteClause(){
     AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Matrosen')=qty_matrosen
     AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Seemann')=qty_seemann`;
 }
+// Schema installation is idempotent and runs only after admin identity validation.
+// No existing ticket, customer or order records are modified.
+let envelopeSchemaInit=null;
+async function ensureEnvelopeSchema(db){
+  if(!envelopeSchemaInit){
+    envelopeSchemaInit=(async()=>{
+      await db.prepare(`CREATE TABLE IF NOT EXISTS envelope_progress (
+        order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE RESTRICT,
+        printed_at TEXT,
+        packed_at TEXT,
+        updated_by TEXT,
+        CHECK (packed_at IS NULL OR printed_at IS NOT NULL)
+      )`).run();
+      await db.prepare('CREATE INDEX IF NOT EXISTS idx_envelope_progress_printed ON envelope_progress(printed_at,packed_at)').run();
+    })();
+    envelopeSchemaInit.catch(()=>{envelopeSchemaInit=null;});
+  }
+  return envelopeSchemaInit;
+}
 function audit(db,actor,action,entity,id,metadata={}){
   return db.prepare('INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json) VALUES (?,?,?,?,?,?)')
     .bind(makeId(),actor,action,entity,id,JSON.stringify(metadata).slice(0,2000));
@@ -149,8 +168,9 @@ async function handleApi(request,env,actor){
     return json({orders:rows.results||[]});
   }
   if(method==='GET'&&path==='/api/envelopes'){
+    await ensureEnvelopeSchema(db);
     const list=await db.prepare(`SELECT o.id,o.external_order_id,o.shipping_status,o.payment_status,
-      o.qty_kombi,o.qty_matrosen,o.qty_seemann,
+      o.qty_kombi,o.qty_matrosen,o.qty_seemann,o.sales_channel,
       c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,
       ep.printed_at,ep.packed_at,
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Kombi') AS scanned_kombi,
@@ -166,11 +186,35 @@ async function handleApi(request,env,actor){
     return json({envelopes:rows});
   }
   if(method==='POST'&&path==='/api/envelopes/status'){
+    await ensureEnvelopeSchema(db);
     const b=await readBody(request), action=clean(b.action,20);
-    if(!['printed','unprinted','packed','unpacked'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
+    if(!['printed','unprinted','packed','unpacked','demo_printed'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
     const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
     if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
     if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
+    if(action==='demo_printed'){
+      // Only for the explicitly labelled fictional demo order, without a physical print.
+      const id=ids[0],stamp=new Date().toISOString();
+      const changes=await db.batch([
+        db.prepare(`INSERT INTO envelope_progress(order_id,updated_by)
+          SELECT id,? FROM orders
+          WHERE id=? AND sales_channel='internal_test'
+            AND internal_note='SYSTEMTEST - keine echte Bestellung'
+            AND shipping_status IN ('not_ready','ready')
+          ON CONFLICT(order_id) DO NOTHING`).bind(actor,id),
+        db.prepare(`UPDATE envelope_progress SET printed_at=?,updated_by=?
+          WHERE order_id=? AND packed_at IS NULL AND printed_at IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE orders.id=envelope_progress.order_id
+            AND sales_channel='internal_test' AND internal_note='SYSTEMTEST - keine echte Bestellung'
+            AND shipping_status IN ('not_ready','ready'))`).bind(stamp,actor,id),
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT ?,?,'envelope.demo_printed','order',?,'{}'
+          WHERE EXISTS (SELECT 1 FROM envelope_progress WHERE order_id=? AND printed_at=?)`)
+          .bind(makeId(),actor,id,id,stamp)
+      ]);
+      if((changes[1]?.meta?.changes||0)!==1)fail(409,'Test-Druckstatus nicht geändert. Ist es eine offene Testbestellung?');
+      return json({changed:1,requested:1,simulated:true});
+    }
     if(action==='printed'){
       // One atomic D1 batch for up to 100 physical print confirmations.
       // Opening a browser print dialog NEVER changes the database.
