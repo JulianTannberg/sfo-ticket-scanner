@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#10272c">
+<title>Bestellung bearbeiten · SturmKnoten 2027</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/bestellung.js" defer></script>
+</head>
+<body class="order-body">
+<main class="order-shell">
+  <header class="order-top">
+    <a class="order-back" href="/">← Bestellungen</a>
+    <span>STURMKNOTEN · 2027</span>
+  </header>
+  <div id="pageStatus" class="alert" role="status">Bestellung wird geladen …</div>
+  <div id="orderView" hidden>
+    <section class="order-hero">
+      <div class="order-hero-title"><h1 id="buyerName">Bestellung</h1><span id="orderBadge" class="tag" hidden>TEST</span></div>
+      <p id="orderReference" class="quiet"></p>
+    </section>
+    <section class="pack-panel">
+      <h2>Was gehört in den Umschlag?</h2>
+      <div id="ticketCounts" class="pack-counts"></div>
+      <div id="scanSummary" class="pack-summary" role="status"></div>
+      <div class="camera" id="orderCamera"><video id="orderVideo" autoplay muted playsinline></video></div>
+      <div class="pack-actions">
+        <button type="button" id="startScan" class="primary">QR-Code scannen</button>
+        <label class="secondary pack-file" for="orderQrPhoto">QR-Foto auswählen</label>
+        <input id="orderQrPhoto" type="file" accept="image/*" style="position:absolute;left:-9999px">
+      </div>
+      <p id="scanFeedback" class="state" role="status" aria-live="polite">Noch kein Scan in dieser Ansicht.</p>
+      <details class="pack-optional">
+        <summary>Code manuell eingeben</summary>
+        <div class="pack-actions"><input id="manualCode" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Ticketcode oder vollständiger QR-Link"><button type="button" id="manualAssign" class="secondary">Zuordnen</button></div>
+      </details>
+      <details class="pack-optional">
+        <summary>Zugeordnete Tickets <span id="assignedLabel"></span></summary>
+        <ul id="assignedTickets" class="ticketlist"></ul>
+      </details>
+    </section>
+    <section class="pack-panel">
+      <h2>Verpackung</h2>
+      <p id="packStatus" class="pack-summary">Noch nicht verpackt.</p>
+      <div id="printActions">
+        <button type="button" class="secondary" id="confirmPrint">Umschlag ist gedruckt</button>
+        <button type="button" class="secondary" id="demoPrint" hidden>TEST: Druck simulieren</button>
+      </div>
+      <button type="button" class="primary pack-big" id="confirmPacked" disabled>Vollständig verpackt bestätigen</button>
+      <button type="button" class="secondary smallbtn" id="undoPacked" hidden>Verpackung korrigieren</button>
+      <p class="quiet" id="packHint">Erst wenn alle Tickets gescannt und der Umschlag gedruckt ist, kannst du bestätigen.</p>
+    </section>
+    <details class="pack-more">
+      <summary>Adresse, Zahlung & Versand</summary>
+      <div class="pack-extra">
+        <h3>Lieferanschrift</h3>
+        <p id="shippingAddress" class="pack-address"></p>
+        <button type="button" id="printOne" class="secondary smallbtn">Briefumschlag drucken</button>
+        <details class="pack-optional">
+          <summary>Anschrift korrigieren</summary>
+          <form id="addressForm" class="pack-form">
+            <label>Name<input name="full_name" required maxlength="120"></label>
+            <label>Straße und Hausnummer<input name="address_line1" required maxlength="180"></label>
+            <label>Adresszusatz<input name="address_line2" maxlength="180"></label>
+            <div class="pack-address-cols"><label>PLZ<input name="postal_code" required maxlength="20"></label><label>Ort<input name="city" required maxlength="90"></label></div>
+            <label>E-Mail<input name="email" type="email" maxlength="150"></label>
+            <label>Telefon<input name="phone" maxlength="50"></label>
+            <button type="submit" class="secondary">Anschrift speichern</button>
+          </form>
+        </details>
+        <h3>Zahlung</h3>
+        <p id="paymentStatus" class="quiet"></p>
+        <form id="paymentForm" class="pack-form">
+          <label>Betrag in €<input name="amount_eur" required inputmode="decimal" placeholder="z. B. 25,00"></label>
+          <div class="pack-address-cols">
+            <label>Zahlungsweg<select name="method"><option value="bank">Überweisung</option><option value="cash">Bar</option><option value="card">Karte</option><option value="other">Sonstiges</option></select></label>
+            <label>Art<select name="direction"><option value="received">Zahlung erhalten</option><option value="refunded">Erstattung</option></select></label>
+          </div>
+          <label>Vermerk<input name="reference" maxlength="100"></label>
+          <button type="submit" class="secondary">Zahlung speichern</button>
+        </form>
+        <h3>Versand</h3>
+        <p id="shippingStatus" class="quiet"></p>
+        <div class="pack-actions">
+          <button type="button" id="markReady" class="secondary">Versandbereit</button>
+          <button type="button" id="markSent" class="primary">Als versendet bestätigen</button>
+        </div>
+        <p id="internalNote" class="quiet"></p>
+      </div>
+    </details>
+    <section id="demoControls" class="pack-panel pack-demo" hidden>
+      <h2>Testbestellung</h2>
+      <button type="button" id="deleteDemo" class="danger">Testbestellung löschen & Ticket freigeben</button>
+    </section>
+  </div>
+</main>
+<div id="printArea" aria-hidden="true"></div>
+</body>
+</html>
