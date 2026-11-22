@@ -45,7 +45,13 @@
         <button type="button" class="secondary" id="printThreeSamples">3 Musterumschläge testen</button>
       </div>
       <p id="bulkState" class="quiet" role="status">Noch keine Bestellungen geladen.</p>
-      <p class="quiet">Im Druckdialog „Umschlag DL“, Originalgröße und den richtigen Drucker auswählen. Zunächst nur die Vorschau prüfen. **Der Sammeldruck setzt keinen Versandstatus** – so entsteht kein falscher Versandnachweis.</p>
+      <p class="quiet">Im Druckdialog „Umschlag DL“ auswählen. Die Druckvorschau allein gilt NICHT als gedruckt. Erst nachdem du echte Umschläge kontrolliert hast, bestätigen.</p>
+      <div class="flexactions">
+        <button type="button" class="secondary" id="selectPendingEnvelopes" disabled>Alle ungedruckten auswählen</button>
+        <button type="button" class="secondary" id="clearEnvelopeSelection" disabled>Auswahl aufheben</button>
+        <button type="button" class="primary" id="confirmEnvelopePrinted" disabled>Ausgewählte als gedruckt bestätigen</button>
+      </div>
+      <div id="envelopeList" class="list" aria-label="Umschläge und Packliste"></div>
     </div>
   </section>
   <section id="tab-import" class="tabcontent" hidden>
