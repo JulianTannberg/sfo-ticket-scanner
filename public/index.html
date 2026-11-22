@@ -12,7 +12,7 @@
 <div id="systemAlert" class="alert warning" role="status">Zugang zur Datenbank wird geprüft …</div>
 <section id="mainApp" hidden>
   <section class="overview" aria-label="Bestandsübersicht"><div><b id="countTickets">–</b><small>Codes importiert</small></div><div><b id="countAssigned">–</b><small>Zugeordnet</small></div><div><b id="countOrders">–</b><small>Bestellungen</small></div><div><b id="countRevenue">–</b><small>Zahlungen netto</small></div></section>
-  <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><button type="button" data-tab="import">QR-Codes importieren</button><button type="button" data-tab="envelopes">Umschläge gesammelt drucken</button></nav>
+  <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><button type="button" data-tab="import">QR-Codes importieren</button><button type="button" data-tab="envelopes">Umschläge gesammelt drucken</button><button type="button" data-tab="check">QR sicher testen</button></nav>
   <section id="tab-orders" class="tabcontent">
     <div class="cols"><section class="panel">
       <h2>Kunden & Bestellungen</h2><label for="searchOrders">Nach Kundenname oder Bestellnummer suchen</label><input id="searchOrders" placeholder="Name oder Bestellnummer" autocomplete="off"><div class="list" id="orderList"><p class="quiet">Noch keine Bestellungen.</p></div>
@@ -52,6 +52,24 @@
         <button type="button" class="primary" id="confirmEnvelopePrinted" disabled>Ausgewählte als gedruckt bestätigen</button>
       </div>
       <div id="envelopeList" class="list" aria-label="Umschläge und Packliste"></div>
+    </div>
+  </section>
+  <section id="tab-check" class="tabcontent" hidden>
+    <div class="panel">
+      <h2>QR-Code prüfen – ohne Zuordnung</h2>
+      <p>Dieser Test liest den QR-Code und erkennt die Ticketart. Es wird <strong>nichts gespeichert, zugeordnet oder am Einlass entwertet</strong>.</p>
+      <div class="camera" id="checkCameraWrap"><video id="checkCameraView" autoplay muted playsinline></video></div>
+      <div class="flexactions">
+        <button type="button" id="checkCameraToggle" class="secondary">Handykamera starten (nur prüfen)</button>
+        <label class="secondary smallbtn" for="checkQrPhoto">QR-Foto auswählen</label>
+        <input type="file" id="checkQrPhoto" accept="image/*" style="position:absolute;left:-9999px">
+      </div>
+      <label for="checkCodeInput">Oder QR-Link / Ticketkennung einfügen</label>
+      <div class="formgrid">
+        <input id="checkCodeInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Ticketcode oder QR-Link">
+        <button type="button" class="primary" id="checkNow">Nur prüfen</button>
+      </div>
+      <div class="state" id="checkState" role="status">Noch kein Code geprüft.</div>
     </div>
   </section>
   <section id="tab-import" class="tabcontent" hidden>
