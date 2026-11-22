@@ -219,6 +219,56 @@ async function handleApi(request,env,actor){
     if(!changed)fail(409,'Keine Statusänderung möglich. Bestellung oder Voraussetzung prüfen.');
     return json({changed,requested:ids.length});
   }
+  if(method==='POST'&&path==='/api/test-order'){
+    // A reproducible demo order with fictional address. No customer input and no migration.
+    const existing=await db.prepare("SELECT id FROM orders WHERE sales_channel='internal_test' AND internal_note='SYSTEMTEST - keine echte Bestellung' AND shipping_status='not_ready' LIMIT 1").first();
+    if(existing)return json(await getOrder(db,existing.id));
+    const cid=makeId(),id=makeId(),stamp=new Date().toISOString();
+    const external='DEMO-2027-'+id.slice(0,8);
+    await db.batch([
+      db.prepare(`INSERT INTO customers(id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?)`)
+        .bind(cid,'Max Mustermann','Musterstraße 12',null,'12345','Musterstadt','DE',stamp,stamp),
+      db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,
+        paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
+        VALUES(?,?,?,'internal_test',0,0,0,'unpaid','not_ready',0,1,0,'SYSTEMTEST - keine echte Bestellung',?,?)`)
+        .bind(id,cid,external,stamp,stamp),
+      audit(db,actor,'test_order.created','order',id,{kind:'demo',ticket_type:'Matrosen'})
+    ]);
+    return json(await getOrder(db,id),201);
+  }
+  if(method==='POST'&&path==='/api/test-order/delete'){
+    const b=await readBody(request),id=clean(b.order_id,80);
+    if(!/^[0-9a-f-]{36}$/.test(id))fail(400,'Ungültige Testbestellung.');
+    const order=await db.prepare('SELECT id,customer_id,sales_channel,internal_note,shipping_status FROM orders WHERE id=?').bind(id).first();
+    if(!order||order.sales_channel!=='internal_test'||order.internal_note!=='SYSTEMTEST - keine echte Bestellung')
+      fail(403,'Nur eigens angelegte Testbestellungen dürfen gelöscht werden.');
+    if(!['not_ready','ready'].includes(order.shipping_status))fail(409,'Eine versendete Bestellung wird nicht gelöscht.');
+    const hasPayments=await db.prepare('SELECT 1 FROM payments WHERE order_id=? LIMIT 1').bind(id).first();
+    if(hasPayments)fail(409,'Bestellung hat Zahlungen. Test nicht automatisch löschen.');
+    const unsafe=await db.prepare(`SELECT code FROM tickets WHERE order_id=? AND
+      (status<>'assigned' OR admitted_at IS NOT NULL OR
+       EXISTS(SELECT 1 FROM scan_events s WHERE s.ticket_code=tickets.code AND s.event_type='accepted')) LIMIT 1`).bind(id).first();
+    if(unsafe)fail(409,'Ein Ticket besitzt Einlassdaten oder einen abweichenden Status. Bitte manuell prüfen.');
+    const hasEnvelope=await db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='envelope_progress'").first();
+    const statements=[
+      db.prepare(`UPDATE tickets SET order_id=NULL,status='available',assigned_at=NULL,holder_name=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE order_id=? AND status='assigned' AND admitted_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM scan_events s WHERE s.ticket_code=tickets.code AND s.event_type='accepted')`).bind(id)
+    ];
+    if(hasEnvelope)statements.push(db.prepare('DELETE FROM envelope_progress WHERE order_id=?').bind(id));
+    statements.push(
+      db.prepare(`DELETE FROM orders WHERE id=? AND sales_channel='internal_test' AND internal_note='SYSTEMTEST - keine echte Bestellung'
+        AND shipping_status IN ('not_ready','ready') AND NOT EXISTS(SELECT 1 FROM payments WHERE order_id=?)`).bind(id,id),
+      db.prepare('DELETE FROM customers WHERE id=? AND NOT EXISTS(SELECT 1 FROM orders WHERE customer_id=?)').bind(order.customer_id,order.customer_id),
+      audit(db,actor,'test_order.deleted','order',id,{kind:'demo',tickets_released:true})
+    );
+    // D1 batch is transactional: on any failure the whole batch rolls back.
+    const result=await db.batch(statements);
+    const orderDeleteIndex=hasEnvelope?2:1;
+    if((result[orderDeleteIndex]?.meta?.changes||0)!==1)fail(409,'Testbestellung konnte nicht vollständig gelöscht werden. Bitte Bestand prüfen.');
+    return json({deleted:true,released:result[0]?.meta?.changes||0});
+  }
   if(method==='POST'&&path==='/api/orders'){
     const b=await readBody(request), full_name=clean(b.full_name,120);
     if(full_name.length<2)fail(400,'Kundenname fehlt.');
@@ -230,6 +280,8 @@ async function handleApi(request,env,actor){
     if(qK+qM+qS<1||qK+qM+qS>100)fail(400,'Mindestens ein Ticket, maximal 100 pro Bestellung.');
     const total=integer(b.total_amount_cents,'Bestellbetrag');
     const postage=integer(b.postage_cents??0,'Versandbetrag');
+    const channel=clean(b.sales_channel,40)||'manual';
+    if(!['manual','online','sales_point','other'].includes(channel))fail(400,'Ungültiger Verkaufskanal.');
     const external=clean(b.external_order_id,80)||null;
     const cid=makeId(),id=makeId(),stamp=new Date().toISOString();
     await db.batch([
@@ -237,7 +289,7 @@ async function handleApi(request,env,actor){
         .bind(cid,full_name,address,clean(b.address_line2,180)||null,postal,city,'DE',email||null,phone||null,stamp,stamp),
       db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
         VALUES(?,?,?,?,?,?,0,'unpaid','not_ready',?,?,?,?,?,?)`)
-        .bind(id,cid,external,clean(b.sales_channel,40)||'manual',total,postage,qK,qM,qS,note||null,stamp,stamp),
+        .bind(id,cid,external,channel,total,postage,qK,qM,qS,note||null,stamp,stamp),
       audit(db,actor,'order.created','order',id,{external,qK,qM,qS,total})
     ]);
     return json(await getOrder(db,id),201);
@@ -310,6 +362,7 @@ async function handleApi(request,env,actor){
       if(!/^[0-9a-f-]{36}$/.test(payid))fail(400,'Buchungs-ID fehlt.');
       const order=await db.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
       if(!order)fail(404,'Bestellung nicht gefunden.');
+      if(order.sales_channel==='internal_test')fail(409,'Testbestellung: keine echten Zahlungen buchen.');
       const previously=await db.prepare('SELECT * FROM payments WHERE id=?').bind(payid).first();
       if(previously){
         if(previously.order_id!==id||previously.direction!==direction||previously.method!==method||previously.amount_cents!==amount||
