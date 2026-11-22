@@ -31,6 +31,15 @@ Kontrolle mit `/tables`: Tabelle `envelope_progress`.
 - wpShopGermany-Bestellexport/-import (abhängig von tatsächlichem Exportprofil)
 - Automatische Preisübernahme
 - Benutzerkonten für andere Organisatoren
-- Testbestellungen-Löschfunktion
+- **Testbestellung mit Löschfunktion vorhanden:** Über „Neue Bestellung“ → „Testbestellung Max Mustermann anlegen“ wird 1 Matrosen-Ticket vorgegeben. Nach der Test-Zuordnung über „Testbestellung löschen und Ticket freigeben“ wird das Ticket wieder verfügbar. Bezahlte, versendete oder am Einlass benutzte Tickets dürfen nicht automatisch freigegeben werden.
 
 Die 700 gedruckten Ticketcodes bleiben unverändert. Sammeldruck/Verpackung löst keine Einlassentwertung aus.
+
+## Demo-Test (ohne echten Käufer)
+
+- Der Button erstellt einen Beispieldatensatz: Max Mustermann, Musterstraße 12, 12345 Musterstadt, Ticketart Matrosen, Menge 1, Betrag 0 €.
+- Der Datensatz trägt die interne Kennung `internal_test`; normale Bestellungen können diesen Kennwert nicht setzen.
+- Der Test kann ein echtes, noch unvergebenes QR-Ticket vorübergehend zuordnen. Vor dem nächsten Live-Verkauf unbedingt wieder die Testbestellung löschen und den Zähler auf 0 prüfen.
+- Die Löschfunktion ist ausschließlich für diese Demo-Bestellung freigegeben; sie löst ihre Ticketzuordnungen und entfernt den fiktiven Kunden. Die 700 importierten QR-Codes bleiben bestehen. Zahlungs-, Versand- und Einlassdaten blockieren die automatische Löschung.
+- Die vollständige Verpackungsprüfung benötigt weiterhin die noch auszuführende D1-Erweiterung `03_D1_KONSOLE_UMSCHLAEGE.sql`.
+- **Code geprüft, aber Produktionsablauf mit echten Mobilgeräten nach diesem Update noch nicht getestet.**
