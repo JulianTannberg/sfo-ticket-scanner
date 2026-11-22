@@ -120,6 +120,16 @@ async function handleApi(request,env,actor){
   const url=new URL(request.url);
   const path=url.pathname, method=request.method;
   if(method==='GET'&&path==='/api/me')return json({email:actor});
+  if(method==='POST'&&path==='/api/tickets/check'){
+    // Read-only QR test. Never assign, redeem, or log a ticket as scanned.
+    const b=await readBody(request);
+    const code=parseCode(b.code);
+    if(!code)return json({recognized:false,reason:'format'});
+    const ticket=await db.prepare('SELECT ticket_type,status,order_id FROM tickets WHERE code=?').bind(code).first();
+    if(!ticket)return json({recognized:false,reason:'unknown'});
+    return json({recognized:true,ticket_type:ticket.ticket_type,status:ticket.status,
+      assigned:Boolean(ticket.order_id)});
+  }
   if(method==='GET'&&path==='/api/overview'){
     const [tickets,orders]=await Promise.all([
       db.prepare(`SELECT ticket_type,status,COUNT(*) AS count FROM tickets GROUP BY ticket_type,status`).all(),
