@@ -5,6 +5,7 @@ const fmt=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currenc
 const euro=s=>{s=String(s||'').trim();if(!/^(0|[1-9]\d{0,6})([,.]\d{1,2})?$/.test(s))throw Error('Euro-Betrag ungültig: '+s);const [a,b='']=s.replace(',','.').split('.');return Number(a)*100+Number(b.padEnd(2,'0'));};
 const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
 let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
+let cameraMode='assign';
 let envelopeBatch=[],printPreviewIds=[],envelopeSelection=new Set();
 const names={Kombi:'Kombi',Matrosen:'Matrosen',Seemann:'Seemann'};
 function alertUser(message,type='warning'){$('systemAlert').textContent=message;$('systemAlert').className='alert '+type;}
@@ -279,38 +280,92 @@ async function confirmPrintedEnvelopes(){
   }catch(e){alertUser('Nicht alle Druckbestätigungen abgeschlossen: '+e.message,'error');await loadEnvelopeBatch();}
 }
 
-async function toggleCamera(){if(cameraStream){stopCamera();return;}
-  if(!('BarcodeDetector' in window)){localState('Dieser Browser unterstützt die QR-Kameraerkennung nicht. Bitte Chrome auf Android verwenden oder Code manuell eingeben.','error');return;}
+function checkState(message,error=false){
+  $('checkState').textContent=message;
+  $('checkState').style.color=error?'#f6a9a2':'#c9efd9';
+}
+async function checkTicket(value){
+  if(!String(value||'').trim()){checkState('Bitte zuerst einen QR-Code einlesen oder einfügen.',true);return;}
+  checkState('Prüfe den Code …');
+  try{
+    const result=await api('/api/tickets/check','POST',{code:String(value)});
+    if(!result.recognized){checkState(result.reason==='format'?'Kein gültiger Sturmflut-Ticketcode.':'Code nicht in den 700 importierten Tickets gefunden.',true);return;}
+    const label=result.ticket_type||'Unbekannte Ticketart';
+    const status=result.status==='available'?'noch keiner Bestellung zugeordnet':
+      result.status==='assigned'?'bereits einer Bestellung zugeordnet':
+      result.status==='blocked'?'gesperrt':'ungültig/storniert';
+    checkState('Erkannt: '+label+' · '+status+'. Dieser Test hat nichts verändert.');
+  }catch(e){checkState('Prüfung fehlgeschlagen: '+e.message,true);}
+}
+async function toggleCamera(mode='assign'){
+  if(cameraStream){stopCamera();return;}
+  cameraMode=mode;
+  const check=mode==='check';
+  if(!('BarcodeDetector' in window)){
+    (check?checkState:localState)('Dieser Browser unterstützt die QR-Kameraerkennung nicht. Versuche das QR-Foto oder die manuelle Eingabe.',true);
+    return;
+  }
   try{
     const formats=await BarcodeDetector.getSupportedFormats();if(!formats.includes('qr_code'))throw Error('QR-Erkennung nicht unterstützt.');
     detector=new BarcodeDetector({formats:['qr_code']});
     cameraStream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'}}});
-    const video=$('cameraView');video.srcObject=cameraStream;await video.play();$('cameraWrap').classList.add('active');$('cameraToggle').textContent='Kamera stoppen';
+    const video=$(check?'checkCameraView':'cameraView');video.srcObject=cameraStream;await video.play();
+    $(check?'checkCameraWrap':'cameraWrap').classList.add('active');
+    $(check?'checkCameraToggle':'cameraToggle').textContent='Kamera stoppen';
     scanBusy=false;scanLast=0;frame=requestAnimationFrame(scanLoop);
-    localState('QR-Code vom gedruckten Ticket in den Rahmen halten.');
-  }catch(e){stopCamera();localState('Kamera nicht verfügbar: '+e.message,'error');}
+    if(check)checkState('QR-Code auf dem PC-Bildschirm in den Rahmen halten.');
+    else localState('QR-Code vom gedruckten Ticket in den Rahmen halten.');
+  }catch(e){
+    stopCamera();
+    if(check)checkState('Kamera nicht verfügbar: '+e.message,true);
+    else localState('Kamera nicht verfügbar: '+e.message,'error');
+  }
 }
-function stopCamera(){if(frame)cancelAnimationFrame(frame);frame=0;
+function stopCamera(){
+  if(frame)cancelAnimationFrame(frame);frame=0;
   if(cameraStream){for(const track of cameraStream.getTracks())track.stop();cameraStream=null;}
-  const view=$('cameraView');if(view)view.srcObject=null;
-  const wrap=$('cameraWrap');if(wrap)wrap.classList.remove('active');
-  const toggle=$('cameraToggle');if(toggle)toggle.textContent='Handykamera starten';
+  for(const id of ['cameraView','checkCameraView']){const v=$(id);if(v)v.srcObject=null;}
+  for(const id of ['cameraWrap','checkCameraWrap']){const wrap=$(id);if(wrap)wrap.classList.remove('active');}
+  if($('cameraToggle'))$('cameraToggle').textContent='Handykamera starten';
+  if($('checkCameraToggle'))$('checkCameraToggle').textContent='Handykamera starten (nur prüfen)';
 }
 async function scanLoop(t){
   if(!cameraStream)return;frame=requestAnimationFrame(scanLoop);
   if(scanBusy||t-scanLast<230)return;
-  const video=$('cameraView');if(!video||video.readyState<2)return;
+  const mode=cameraMode,video=$(mode==='check'?'checkCameraView':'cameraView');
+  if(!video||video.readyState<2)return;
   scanBusy=true;scanLast=t;
-  try{const result=await detector.detect(video);const found=result?.find(x=>x.rawValue)?.rawValue;if(found){stopCamera();await assign(found);}}
-  catch(e){localState('Scan fehlgeschlagen: '+e.message,'error');stopCamera();}
-  finally{scanBusy=false;}
+  try{
+    const result=await detector.detect(video);
+    const found=result?.find(x=>x.rawValue)?.rawValue;
+    if(found){stopCamera();if(mode==='check')await checkTicket(found);else await assign(found);}
+  }catch(e){
+    if(mode==='check')checkState('Scan fehlgeschlagen: '+e.message,true);
+    else localState('Scan fehlgeschlagen: '+e.message,'error');
+    stopCamera();
+  }finally{scanBusy=false;}
 }
-async function scanPhoto(file){
-  if(!('BarcodeDetector' in window)){localState('QR-Fotoerkennung von diesem Browser nicht unterstützt.','error');return;}
-  try{const detector=new BarcodeDetector({formats:['qr_code']});const bitmap=await createImageBitmap(file);const results=await detector.detect(bitmap);bitmap.close();
-    if(results.length&&results[0].rawValue)await assign(results[0].rawValue);
+async function scanPhoto(file,mode='assign'){
+  const check=mode==='check';
+  if(!('BarcodeDetector' in window)){
+    if(check)checkState('QR-Fotoerkennung von diesem Browser nicht unterstützt.',true);
+    else localState('QR-Fotoerkennung von diesem Browser nicht unterstützt.','error');
+    return;
+  }
+  try{
+    const detector=new BarcodeDetector({formats:['qr_code']});
+    const bitmap=await createImageBitmap(file);
+    let results;
+    try{results=await detector.detect(bitmap);}finally{bitmap.close();}
+    if(results.length&&results[0].rawValue){
+      if(check)await checkTicket(results[0].rawValue);
+      else await assign(results[0].rawValue);
+    }else if(check)checkState('Auf dem Bild wurde kein QR-Code erkannt.',true);
     else localState('Auf dem Bild wurde kein QR-Code gefunden.','error');
-  }catch(e){localState('Bild konnte nicht verarbeitet werden: '+e.message,'error');}
+  }catch(e){
+    if(check)checkState('Bild konnte nicht verarbeitet werden: '+e.message,true);
+    else localState('Bild konnte nicht verarbeitet werden: '+e.message,'error');
+  }
 }
 async function createOrder(e){
   e.preventDefault();const form=e.currentTarget;const f=new FormData(form);let data;
@@ -346,6 +401,10 @@ async function importCsv(){if(!selectedUrls.length)return;const btn=$('importBtn
 async function init(){
   document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>showTab(el.dataset.tab)));
   $('newOrderForm').addEventListener('submit',createOrder);
+  $('checkNow').addEventListener('click',()=>checkTicket($('checkCodeInput').value.trim()));
+  $('checkCodeInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();checkTicket(e.currentTarget.value.trim());}});
+  $('checkCameraToggle').addEventListener('click',()=>toggleCamera('check'));
+  $('checkQrPhoto').addEventListener('change',async e=>{const file=e.target.files[0];if(file)await scanPhoto(file,'check');e.target.value='';});
   $('sampleEnvelopeBtn').addEventListener('click',()=>printEnvelope(['Max Mustermann','Musterstraße 12','12345 Musterstadt']));
   $('checkEnvelopes').addEventListener('click',loadEnvelopeBatch);
   $('printAllEnvelopes').addEventListener('click',printSelectedEnvelopes);
