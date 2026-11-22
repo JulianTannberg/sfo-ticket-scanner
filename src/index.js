@@ -140,7 +140,7 @@ async function handleApi(request,env,actor){
   }
   if(method==='GET'&&path==='/api/orders'){
     const q=clean(url.searchParams.get('q'),80);
-    const rows=await db.prepare(`SELECT o.id,o.external_order_id,o.created_at,o.payment_status,o.shipping_status,
+    const rows=await db.prepare(`SELECT o.id,o.external_order_id,o.created_at,o.payment_status,o.shipping_status,o.sales_channel,
       o.total_amount_cents,o.paid_amount_cents,o.qty_kombi,o.qty_matrosen,o.qty_seemann,c.full_name,
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id) AS assigned_count
       FROM orders o JOIN customers c ON c.id=o.customer_id
