@@ -4,5 +4,12 @@
   "assets": {
     "directory": "./public",
     "not_found_handling": "404-page"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sturmknoten-2027-db",
+      "database_id": "57a1be57-30a4-4ec9-adf1-d2d10056d48c"
+    }
+  ]
 }
