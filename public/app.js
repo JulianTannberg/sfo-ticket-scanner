@@ -38,7 +38,7 @@ async function listOrders(){
   for(const o of orders){
     const btn=document.createElement('button');btn.type='button';btn.className='ordercard'+(current?.order.id===o.id?' selected':'');
     const expected=o.qty_kombi+o.qty_matrosen+o.qty_seemann;
-    btn.innerHTML=`<strong>${esc(o.full_name)}</strong><small>${esc(o.external_order_id||o.id.slice(0,8))} · ${date(o.created_at)}</small>
+    btn.innerHTML=`<strong>${esc(o.full_name)}${o.sales_channel==='internal_test'?' · 🧪 TEST':''}</strong><small>${esc(o.external_order_id||o.id.slice(0,8))} · ${date(o.created_at)}</small>
       <span class="tag ${o.payment_status==='paid'?'':'warn'}">${o.payment_status==='paid'?'Bezahlt':o.payment_status==='partial'?'Teilbezahlt':'Zahlung offen'}</span>
       <span class="tag ${o.shipping_status==='sent'?'':'warn'}">${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</span>
       <small>${o.assigned_count}/${expected} QR zugeordnet · ${fmt(o.paid_amount_cents)} / ${fmt(o.total_amount_cents)}</small>`;
@@ -63,7 +63,7 @@ function renderOrder(){
   const sent=o.shipping_status==='sent';
   const address=[o.full_name,o.address_line1,o.address_line2,[o.postal_code,o.city].filter(Boolean).join(' ')].filter(Boolean);
   $('orderDetail').innerHTML=`
-    <div class="summary"><div><strong>${esc(o.full_name)}</strong><p class="quiet" style="white-space:pre-line">${esc(address.join('\n'))}</p></div>
+    <div class="summary"><div><strong>${esc(o.full_name)}${o.sales_channel==='internal_test'?' · 🧪 TEST':''}</strong><p class="quiet" style="white-space:pre-line">${esc(address.join('\n'))}</p></div>
       <div class="pill">${esc(o.external_order_id||o.id.slice(0,8))}</div></div>
     <div class="details"><div><small>Bestellung</small><strong>${o.qty_kombi} Kombi · ${o.qty_matrosen} Matrosen · ${o.qty_seemann} Seemann</strong></div>
       <div><small>QR-Codes zugeordnet</small><strong>${current.tickets.length} von ${expected}</strong></div>
@@ -71,6 +71,7 @@ function renderOrder(){
       <div><small>Versand</small><strong>${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</strong><small>${date(o.shipped_at)}</small></div>
       <div><small>Umschlag / Verpackung</small><strong>${ep?esc(envelopeStatus(ep)):'Packliste noch nicht eingerichtet'}</strong></div></div>
       ${ep&&ep.printed_at&&!ep.packed_at&&o.shipping_status!=='sent'?'<div class="flexactions"><button type="button" id="packedDetailBtn" class="secondary smallbtn" '+(!envelopeDone(ep)?'disabled title="Zuerst alle Tickets einscannen"':'')+'>Umschlag vollständig verpackt</button></div>':''}
+    ${o.sales_channel==='internal_test'?'<div class="box"><p><strong>TESTBESTELLUNG.</strong> Diese Musteradresse ist erfunden. Ein hier zugeordnetes echtes Ticket ist bis zum Löschen vorübergehend nicht mehr frei. <strong>Vor dem Abschluss wieder löschen!</strong></p><button id="deleteTestOrderBtn" type="button" class="danger">Testbestellung löschen und Ticket freigeben</button></div>':''}
     <div class="flexactions"><button id="printEnvelope" class="secondary smallbtn" type="button">Briefumschlag drucken</button><button id="editCustomer" class="secondary smallbtn" type="button" ${sent?'disabled':''}>Anschrift korrigieren</button><button id="reopenOrders" type="button" class="secondary smallbtn">Liste aktualisieren</button></div>
     <hr class="separator"><h3>1. QR-Code vom gedruckten Ticket zuordnen</h3>
     <p class="quiet">Kombi ${assigned.Kombi}/${o.qty_kombi} · Matrosen ${assigned.Matrosen}/${o.qty_matrosen} · Seemann ${assigned.Seemann}/${o.qty_seemann}</p>
@@ -93,6 +94,7 @@ function renderOrder(){
     <button id="sentBtn" class="primary" ${!complete||!paid||sent?'disabled':''}>Als versendet bestätigen</button></div>
     ${o.internal_note?`<p class="quiet">Interne Notiz: ${esc(o.internal_note)}</p>`:''}`;
   $('printEnvelope').addEventListener('click',()=>printEnvelope(address));
+  if($('deleteTestOrderBtn'))$('deleteTestOrderBtn').addEventListener('click',deleteTestOrder);
   if($('packedDetailBtn'))$('packedDetailBtn').addEventListener('click',()=>setEnvelopeStatus('packed',[o.id]));
   $('editCustomer').addEventListener('click',editCustomer);
   $('reopenOrders').addEventListener('click',()=>refreshCurrent());
@@ -367,6 +369,33 @@ async function scanPhoto(file,mode='assign'){
     else localState('Bild konnte nicht verarbeitet werden: '+e.message,'error');
   }
 }
+async function createTestOrder(){
+  const btn=$('createTestOrderBtn');
+  btn.disabled=true;
+  try{
+    const result=await api('/api/test-order','POST',{});
+    current=result;
+    $('searchOrders').value='';
+    await Promise.all([listOrders(),overview()]);
+    showTab('orders');
+    await selectOrder(result.order.id);
+    alertUser('🧪 Testbestellung Max Mustermann geöffnet. 1 Matrosen-Ticket. Nach dem Test wieder löschen.','success');
+  }catch(e){alertUser('Testbestellung nicht angelegt: '+e.message,'error');}
+  finally{btn.disabled=false;}
+}
+async function deleteTestOrder(){
+  if(!current||current.order.sales_channel!=='internal_test')return;
+  const id=current.order.id,count=current.tickets.length;
+  if(!confirm('Testbestellung von Max Mustermann wirklich LÖSCHEN? '+count+' zugeordnete Tickets werden wieder freigegeben. Das hat KEINEN Einfluss auf deren Gültigkeit am Einlass.'))return;
+  const btn=$('deleteTestOrderBtn');if(btn)btn.disabled=true;
+  try{
+    const result=await api('/api/test-order/delete','POST',{order_id:id});
+    current=null;
+    $('orderDetail').innerHTML='<p class="quiet">Testbestellung gelöscht. Die Ticketcodes bleiben in der Datenbank erhalten.</p>';
+    await Promise.all([listOrders(),overview()]);
+    alertUser('Testbestellung gelöscht. '+result.released+' Tickets wieder freigegeben.','success');
+  }catch(e){alertUser('Löschen nicht bestätigt: '+e.message,'error');if(btn)btn.disabled=false;}
+}
 async function createOrder(e){
   e.preventDefault();const form=e.currentTarget;const f=new FormData(form);let data;
   try{data={};for(const [key,val]of f)data[key]=String(val).trim();
@@ -401,6 +430,7 @@ async function importCsv(){if(!selectedUrls.length)return;const btn=$('importBtn
 async function init(){
   document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>showTab(el.dataset.tab)));
   $('newOrderForm').addEventListener('submit',createOrder);
+  $('createTestOrderBtn').addEventListener('click',createTestOrder);
   $('checkNow').addEventListener('click',()=>checkTicket($('checkCodeInput').value.trim()));
   $('checkCodeInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();checkTicket(e.currentTarget.value.trim());}});
   $('checkCameraToggle').addEventListener('click',()=>toggleCamera('check'));
