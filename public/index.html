@@ -1,23 +1,49 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <title>SturmKnoten 2027 – Einrichtung</title>
-  <style>
-    :root{color-scheme:dark;font-family:system-ui,Arial,sans-serif}
-    body{background:#0c1e23;color:#f0f2e8;min-height:100vh;display:grid;place-items:center;margin:0;padding:20px}
-    main{max-width:570px;padding:32px;border:1px solid #355159;border-radius:20px;background:#132b31}
-    h1{margin:0 0 12px;font-size:1.8rem}p{color:#c6d5d2;line-height:1.6}
-    .note{font-size:.85rem;color:#eccb8a}
-  </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#10272c"><title>SturmKnoten 2027 – Ticketverkauf & Versand</title>
+<link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
-<main>
-  <h1>SturmKnoten 2027</h1>
-  <p>Die interne Ticketverwaltung wird eingerichtet. Hier ist noch kein Benutzerzugang und keine Verarbeitung von Kundendaten freigeschaltet.</p>
-  <p class="note">Technische Bereitstellungsseite – keine Tickets prüfen oder Kundendaten eingeben.</p>
+<main class="shell">
+<header class="header"><div><div class="eyebrow">STURMFLUT FESTIVAL · 2027</div><h1>Ticketverkauf & Versand</h1><p>Käufer erfassen · Tickets einscannen · Zahlung buchen · Umschlag drucken</p></div><div class="smalltag">Verwaltung · geschützt</div></header>
+<div id="systemAlert" class="alert warning" role="status">Zugang zur Datenbank wird geprüft …</div>
+<section id="mainApp" hidden>
+  <section class="overview" aria-label="Bestandsübersicht"><div><b id="countTickets">–</b><small>Codes importiert</small></div><div><b id="countAssigned">–</b><small>Zugeordnet</small></div><div><b id="countOrders">–</b><small>Bestellungen</small></div><div><b id="countRevenue">–</b><small>Zahlungen netto</small></div></section>
+  <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><button type="button" data-tab="import">QR-Codes importieren</button></nav>
+  <section id="tab-orders" class="tabcontent">
+    <div class="cols"><section class="panel">
+      <h2>Kunden & Bestellungen</h2><label for="searchOrders">Nach Kundenname oder Bestellnummer suchen</label><input id="searchOrders" placeholder="Name oder Bestellnummer" autocomplete="off"><div class="list" id="orderList"><p class="quiet">Noch keine Bestellungen.</p></div>
+    </section><section class="panel" id="detailPanel">
+      <h2>Ausgewählte Bestellung</h2><div id="orderDetail"><p class="quiet">Wähle links eine Bestellung aus.</p></div>
+    </section></div>
+  </section>
+  <section id="tab-create" class="tabcontent" hidden>
+    <form id="newOrderForm" class="panel">
+      <h2>Bestellung aufnehmen</h2><p class="quiet">Kundendaten werden nur an die geschützte SturmKnoten-Datenbank übertragen, nicht an ChatGPT oder GitHub.</p>
+      <div class="formgrid"><label>Bestellnummer (optional)<input name="external_order_id" maxlength="80" placeholder="z. B. Shop-1234"></label><label>Verkauf über<select name="sales_channel"><option value="manual">Direktverkauf</option><option value="online">Onlinebestellung</option><option value="sales_point">Verkaufsstelle</option><option value="other">Sonstige</option></select></label></div>
+      <h3>Käufer & Lieferanschrift</h3>
+      <div class="formgrid"><label>Name*<input name="full_name" maxlength="120" required autocomplete="name"></label><label>E-Mail (optional)<input name="email" type="email" autocomplete="email"></label></div>
+      <div class="formgrid"><label>Straße und Hausnummer*<input name="address_line1" maxlength="180" required autocomplete="street-address"></label><label>Adresszusatz<input name="address_line2" maxlength="180"></label></div>
+      <div class="formgrid"><label>PLZ*<input name="postal_code" maxlength="20" required autocomplete="postal-code"></label><label>Ort*<input name="city" maxlength="90" required autocomplete="address-level2"></label></div>
+      <div class="formgrid"><label>Telefon (optional)<input name="phone" maxlength="50" autocomplete="tel"></label><label>Interne Notiz<input name="internal_note" maxlength="500" placeholder="Nur intern sichtbar"></label></div>
+      <h3>Bestellte Tickets</h3><div class="formgrid three"><label>Kombi<input type="number" name="qty_kombi" min="0" max="100" value="0" required></label><label>Matrosen<input type="number" name="qty_matrosen" min="0" max="100" value="0" required></label><label>Seemann<input type="number" name="qty_seemann" min="0" max="100" value="0" required></label></div>
+      <div class="formgrid"><label>Gesamtbetrag in € (inklusive Versand)*<input type="text" inputmode="decimal" name="total_eur" value="0,00" required></label><label>Davon Porto in €<input type="text" inputmode="decimal" name="postage_eur" value="0,00"></label></div>
+      <button class="primary" type="submit" id="createOrderBtn">Bestellung sicher speichern</button>
+    </form>
+  </section>
+  <section id="tab-import" class="tabcontent" hidden>
+    <div class="panel"><h2>Die gedruckten QR-Codes importieren</h2>
+      <p>Verwende die originale private CSV-Datei mit den <b>700 Ticketlinks</b>. Die Datei wird direkt von deinem Gerät an die geschützte Datenbank gesendet – <strong>nicht</strong> auf GitHub hochgeladen.</p>
+      <label class="filelabel" for="qrCsv">CSV mit Ticket-URLs auswählen</label><input id="qrCsv" type="file" accept=".csv,text/csv,.txt,text/plain">
+      <button id="importBtn" class="primary" type="button" disabled>Geprüfte QR-Codes importieren</button>
+      <p class="quiet" id="importState" role="status">Noch keine Datei ausgewählt.</p><p class="quiet">Vor dem Versand mindestens einen echten gedruckten QR-Code mit der App scannen und prüfen.</p>
+    </div>
+  </section>
+</section>
+<footer>SturmKnoten 2027 · Nur interne Verwaltung · Test der vollständigen Abläufe vor Nutzung mit echten Bestellungen erforderlich.</footer>
 </main>
-</body>
-</html>
+<div id="printArea" aria-hidden="true"></div>
+</body></html>
