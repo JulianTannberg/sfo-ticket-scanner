@@ -46,12 +46,15 @@ async function listOrders(){
 }
 async function selectOrder(id){
   stopCamera();
-  try{current=await api('/api/orders/'+encodeURIComponent(id));renderOrder();await listOrders();showTab('orders');}
+  try{current=await api('/api/orders/'+encodeURIComponent(id));
+    try{const pack=await api('/api/envelopes');envelopeBatch=pack.envelopes||[];}catch{/* Not yet migrated: existing order view remains usable. */}
+    renderOrder();await listOrders();showTab('orders');}
   catch(e){alertUser(e.message,'error');}
 }
 function renderOrder(){
   if(!current)return;
   const o=current.order,assigned={Kombi:0,Matrosen:0,Seemann:0};
+  const ep=envelopeBatch.find(e=>e.id===o.id);
   for(const t of current.tickets)assigned[t.ticket_type]++;
   const expected=o.qty_kombi+o.qty_matrosen+o.qty_seemann;
   const complete=assigned.Kombi===o.qty_kombi&&assigned.Matrosen===o.qty_matrosen&&assigned.Seemann===o.qty_seemann;
@@ -64,7 +67,9 @@ function renderOrder(){
     <div class="details"><div><small>Bestellung</small><strong>${o.qty_kombi} Kombi · ${o.qty_matrosen} Matrosen · ${o.qty_seemann} Seemann</strong></div>
       <div><small>QR-Codes zugeordnet</small><strong>${current.tickets.length} von ${expected}</strong></div>
       <div><small>Zahlung</small><strong>${fmt(o.paid_amount_cents)} / ${fmt(o.total_amount_cents)}</strong><small>${esc(o.payment_status)}</small></div>
-      <div><small>Versand</small><strong>${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</strong><small>${date(o.shipped_at)}</small></div></div>
+      <div><small>Versand</small><strong>${o.shipping_status==='sent'?'Versendet':o.shipping_status==='ready'?'Versandbereit':'Offen'}</strong><small>${date(o.shipped_at)}</small></div>
+      <div><small>Umschlag / Verpackung</small><strong>${ep?esc(envelopeStatus(ep)):'Packliste noch nicht eingerichtet'}</strong></div></div>
+      ${ep&&ep.printed_at&&!ep.packed_at&&o.shipping_status!=='sent'?'<div class="flexactions"><button type="button" id="packedDetailBtn" class="secondary smallbtn" '+(!envelopeDone(ep)?'disabled title="Zuerst alle Tickets einscannen"':'')+'>Umschlag vollständig verpackt</button></div>':''}
     <div class="flexactions"><button id="printEnvelope" class="secondary smallbtn" type="button">Briefumschlag drucken</button><button id="editCustomer" class="secondary smallbtn" type="button" ${sent?'disabled':''}>Anschrift korrigieren</button><button id="reopenOrders" type="button" class="secondary smallbtn">Liste aktualisieren</button></div>
     <hr class="separator"><h3>1. QR-Code vom gedruckten Ticket zuordnen</h3>
     <p class="quiet">Kombi ${assigned.Kombi}/${o.qty_kombi} · Matrosen ${assigned.Matrosen}/${o.qty_matrosen} · Seemann ${assigned.Seemann}/${o.qty_seemann}</p>
@@ -87,6 +92,7 @@ function renderOrder(){
     <button id="sentBtn" class="primary" ${!complete||!paid||sent?'disabled':''}>Als versendet bestätigen</button></div>
     ${o.internal_note?`<p class="quiet">Interne Notiz: ${esc(o.internal_note)}</p>`:''}`;
   $('printEnvelope').addEventListener('click',()=>printEnvelope(address));
+  if($('packedDetailBtn'))$('packedDetailBtn').addEventListener('click',()=>setEnvelopeStatus('packed',[o.id]));
   $('editCustomer').addEventListener('click',editCustomer);
   $('reopenOrders').addEventListener('click',()=>refreshCurrent());
   if(!sent){
@@ -244,6 +250,7 @@ async function setEnvelopeStatus(action,ids){
     const r=await api('/api/envelopes/status','POST',{action,ids});
     alertUser(r.changed+' Umschlag-Status geändert.','success');
     await Promise.all([loadEnvelopeBatch(),listOrders()]);
+    if(current&&ids.includes(current.order.id)){current=await api('/api/orders/'+current.order.id);renderOrder();}
   }catch(e){alertUser('Status nicht gespeichert: '+e.message,'error');}
 }
 function printSelectedEnvelopes(){
