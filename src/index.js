@@ -1,14 +1,301 @@
-// SturmKnoten 2027 – server-side entry point.
-// Public placeholder assets are served by Cloudflare's static-assets layer.
-// No customer APIs are enabled until authentication and authorization exist.
-export default {
-  async fetch() {
-    return new Response("Nicht gefunden", {
-      status: 404,
-      headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "no-store"
+// SturmKnoten 2027: secure ticket sales and dispatch API.
+// All dynamic routes deny access unless a signed Cloudflare Access token is
+// verified AND the identity email matches the explicitly configured admin.
+// All input is parameterized; no customer data or QR secrets belong in GitHub.
+
+const COMMON_HEADERS = {
+  'cache-control': 'no-store, max-age=0',
+  'pragma': 'no-cache',
+  'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+};
+const codeFormat = /^[KMS]27[A-HJ-NP-Z2-9]{13}$/;
+const types = { K: 'Kombi', M: 'Matrosen', S: 'Seemann' };
+const clean = (x, limit=200) => String(x ?? '').trim().slice(0, limit);
+const makeId = () => crypto.randomUUID();
+const json = (data, status=200) => new Response(JSON.stringify(data), {
+  status,
+  headers: {...COMMON_HEADERS, 'content-type': 'application/json; charset=utf-8'},
+});
+function fail(code, message){ const e = new Error(message); e.status = code; throw e; }
+function integer(n, name, max=100000000){
+  if (!Number.isSafeInteger(n) || n < 0 || n > max) fail(400, `${name}: ungültige Zahl`);
+  return n;
+}
+function positive(n, name, max=100000000){
+  integer(n,name,max); if(n===0) fail(400,`${name} muss größer als 0 sein`); return n;
+}
+function decodeBase64Url(s) {
+  if (!/^[A-Za-z0-9_-]+$/.test(s) || s.length>8000) throw new Error('JWT-Teil ungültig');
+  const value=s.replace(/-/g,'+').replace(/_/g,'/');
+  const binary=atob(value+'='.repeat((4-value.length%4)%4));
+  return Uint8Array.from(binary,c=>c.charCodeAt(0));
+}
+const parseJWTPart = s => JSON.parse(new TextDecoder().decode(decodeBase64Url(s)));
+
+async function accessEmail(request, env){
+  const team=String(env.TEAM_DOMAIN||'').replace(/\/$/,'');
+  const audience=clean(env.ACCESS_AUD,128);
+  const admin=clean(env.ADMIN_EMAIL,254).toLowerCase();
+  if(!/^https:\/\/[\w-]+\.cloudflareaccess\.com$/.test(team)||!audience||!admin){
+    fail(503,'Administrationszugang noch nicht vollständig eingerichtet.');
+  }
+  const cookieMatch=(request.headers.get('cookie')||'').match(/(?:^|;\s*)CF_Authorization=([^;]+)/);
+  const token=request.headers.get('Cf-Access-Jwt-Assertion')||cookieMatch?.[1]||'';
+  const pieces=token.split('.');
+  if(pieces.length!==3||token.length>15000)fail(403,'Cloudflare-Anmeldung fehlt.');
+  let header,payload;
+  try { header=parseJWTPart(pieces[0]);payload=parseJWTPart(pieces[1]); }
+  catch {fail(403,'Anmeldung ist ungültig.');}
+  if(header?.alg!=='RS256'||!header.kid||!payload||typeof payload!=='object')fail(403,'Ungültiger Anmeldetoken.');
+  const now=Math.floor(Date.now()/1000);
+  if(payload.iss!==team||!(Array.isArray(payload.aud)?payload.aud:[payload.aud]).includes(audience)||
+     typeof payload.exp!=='number'||payload.exp<=now||typeof payload.iat!=='number'||payload.iat>now+120||
+     (typeof payload.nbf==='number'&&payload.nbf>now+120))fail(403,'Anmeldung abgelaufen oder für andere Anwendung.');
+  if(String(payload.email||'').toLowerCase()!==admin)fail(403,'Kein Zugriff auf diese Verwaltung.');
+  let certs;
+  try {
+    const res=await fetch(`${team}/cdn-cgi/access/certs`, {cf:{cacheTtl:600}});
+    if(!res.ok)throw new Error('No certificate');
+    certs=await res.json();
+  } catch {fail(503,'Cloudflare-Signaturprüfung gerade nicht verfügbar.');}
+  const jwk=(certs.keys||[]).find(k=>k.kid===header.kid&&k.kty==='RSA');
+  if(!jwk)fail(403,'Cloudflare-Signaturschlüssel nicht erkannt.');
+  try {
+    const key=await crypto.subtle.importKey('jwk',jwk,{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
+    const verified=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',key,decodeBase64Url(pieces[2]),new TextEncoder().encode(`${pieces[0]}.${pieces[1]}`));
+    if(!verified)fail(403,'Cloudflare-Signatur ungültig.');
+  }catch(e){if(e.status)throw e;fail(403,'Cloudflare-Signatur ungültig.');}
+  return admin;
+}
+async function readBody(request){
+  const length=Number(request.headers.get('content-length')||0);
+  if(length>120000)fail(413,'Eingabe zu groß');
+  const raw=await request.text();
+  if(raw.length>120000)fail(413,'Eingabe zu groß');
+  try{const obj=JSON.parse(raw);if(!obj||typeof obj!=='object'||Array.isArray(obj))throw Error();return obj;}
+  catch{fail(400,'Ungültige Eingabedaten');}
+}
+function parseCode(value){
+  const text=clean(value,200);
+  if(codeFormat.test(text))return text;
+  try {
+    const u=new URL(text);
+    if(u.protocol!=='https:'||u.hostname!=='sturmflutfestival.de'||u.pathname!=='/info/'||!u.searchParams.has('t'))return null;
+    const code=u.searchParams.get('t');
+    if(!codeFormat.test(code))return null;
+    return code;
+  }catch{return null;}
+}
+function enforceOrigin(request){
+  const expected=new URL(request.url).origin;
+  if(request.headers.get('origin')!==expected||request.headers.get('x-sturmknoten')!=='1')fail(403,'Ungültige Anfrageherkunft');
+  if(!(request.headers.get('content-type')||'').startsWith('application/json'))fail(415,'JSON erforderlich');
+}
+async function getOrder(db,id){
+  const order=await db.prepare(`SELECT o.*, c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,c.country,c.email,c.phone
+    FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`).bind(id).first();
+  if(!order)fail(404,'Bestellung nicht gefunden.');
+  const [tickets,payments]=await Promise.all([
+    db.prepare('SELECT code,ticket_type,assigned_at FROM tickets WHERE order_id=? ORDER BY assigned_at,code').bind(id).all(),
+    db.prepare('SELECT id,direction,method,amount_cents,reference,occurred_at FROM payments WHERE order_id=? ORDER BY occurred_at,id').bind(id).all()
+  ]);
+  return {order,tickets:tickets.results||[],payments:payments.results||[]};
+}
+function orderCompleteClause(){
+  return `(SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Kombi')=qty_kombi
+    AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Matrosen')=qty_matrosen
+    AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Seemann')=qty_seemann`;
+}
+function audit(db,actor,action,entity,id,metadata={}){
+  return db.prepare('INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json) VALUES (?,?,?,?,?,?)')
+    .bind(makeId(),actor,action,entity,id,JSON.stringify(metadata).slice(0,2000));
+}
+
+async function handleApi(request,env,actor){
+  if(!env.DB)fail(503,'Datenbank-Verbindung fehlt.');
+  const db=env.DB;
+  const url=new URL(request.url);
+  const path=url.pathname, method=request.method;
+  if(method==='GET'&&path==='/api/me')return json({email:actor});
+  if(method==='GET'&&path==='/api/overview'){
+    const [tickets,orders]=await Promise.all([
+      db.prepare(`SELECT ticket_type,status,COUNT(*) AS count FROM tickets GROUP BY ticket_type,status`).all(),
+      db.prepare(`SELECT COUNT(*) AS orders,COALESCE(SUM(paid_amount_cents),0) AS paid_cents,
+        SUM(CASE WHEN shipping_status='sent' THEN 1 ELSE 0 END) AS sent FROM orders`).first()
+    ]);
+    return json({tickets:tickets.results||[],orders});
+  }
+  if(method==='GET'&&path==='/api/orders'){
+    const q=clean(url.searchParams.get('q'),80);
+    const rows=await db.prepare(`SELECT o.id,o.external_order_id,o.created_at,o.payment_status,o.shipping_status,
+      o.total_amount_cents,o.paid_amount_cents,o.qty_kombi,o.qty_matrosen,o.qty_seemann,c.full_name,
+      (SELECT COUNT(*) FROM tickets WHERE order_id=o.id) AS assigned_count
+      FROM orders o JOIN customers c ON c.id=o.customer_id
+      WHERE (?='' OR c.full_name LIKE ? OR o.external_order_id LIKE ?)
+      ORDER BY o.created_at DESC,o.id DESC LIMIT 150`).bind(q,`%${q}%`,`%${q}%`).all();
+    return json({orders:rows.results||[]});
+  }
+  if(method==='POST'&&path==='/api/orders'){
+    const b=await readBody(request), full_name=clean(b.full_name,120);
+    if(full_name.length<2)fail(400,'Kundenname fehlt.');
+    const address=clean(b.address_line1,180),postal=clean(b.postal_code,20),city=clean(b.city,90);
+    const email=clean(b.email,150),phone=clean(b.phone,50),note=clean(b.internal_note,500);
+    if(!address||!postal||!city)fail(400,'Vollständige Versandanschrift erforderlich.');
+    if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Ungültige E-Mail-Adresse.');
+    const qK=integer(b.qty_kombi,'Kombi',500),qM=integer(b.qty_matrosen,'Matrosen',100),qS=integer(b.qty_seemann,'Seemann',100);
+    if(qK+qM+qS<1||qK+qM+qS>100)fail(400,'Mindestens ein Ticket, maximal 100 pro Bestellung.');
+    const total=integer(b.total_amount_cents,'Bestellbetrag');
+    const postage=integer(b.postage_cents??0,'Versandbetrag');
+    const external=clean(b.external_order_id,80)||null;
+    const cid=makeId(),id=makeId(),stamp=new Date().toISOString();
+    await db.batch([
+      db.prepare('INSERT INTO customers(id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(cid,full_name,address,clean(b.address_line2,180)||null,postal,city,'DE',email||null,phone||null,stamp,stamp),
+      db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,0,'unpaid','not_ready',?,?,?,?,?,?)`)
+        .bind(id,cid,external,clean(b.sales_channel,40)||'manual',total,postage,qK,qM,qS,note||null,stamp,stamp),
+      audit(db,actor,'order.created','order',id,{external,qK,qM,qS,total})
+    ]);
+    return json(await getOrder(db,id),201);
+  }
+  const match=path.match(/^\/api\/orders\/([a-f0-9-]{36})(?:\/(assign|unassign|payment|dispatch|customer))?$/);
+  if(match){
+    const id=match[1],op=match[2];
+    if(method==='GET'&&!op)return json(await getOrder(db,id));
+    if(method==='POST'&&op==='assign'){
+      const b=await readBody(request),code=parseCode(b.code);
+      if(!code)fail(400,'QR-Code hat kein gültiges Ticketformat.');
+      const existing=await db.prepare('SELECT code,ticket_type,status,order_id FROM tickets WHERE code=?').bind(code).first();
+      if(!existing)fail(404,'Dieser QR-Code gehört nicht zu den importierten 700 Tickets.');
+      if(existing.order_id){
+        if(existing.order_id===id)fail(409,'Dieses Ticket ist der Bestellung bereits zugeordnet.');
+        fail(409,'Dieses Ticket ist schon einer anderen Bestellung zugeordnet.');
       }
-    });
+      if(existing.status!=='available')fail(409,'Ticket ist gesperrt oder nicht verfügbar.');
+      const order=await db.prepare('SELECT shipping_status FROM orders WHERE id=?').bind(id).first();
+      if(!order)fail(404,'Bestellung nicht gefunden.');
+      if(order.shipping_status==='sent'||order.shipping_status==='handed_over'||order.shipping_status==='cancelled')fail(409,'Bestellung nicht mehr bearbeitbar.');
+      const stamp=new Date().toISOString();
+      const update=await db.batch([
+        db.prepare(`UPDATE tickets SET order_id=?,status='assigned',assigned_at=?,updated_at=?
+          WHERE code=? AND status='available' AND order_id IS NULL
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))
+          AND (SELECT COUNT(*) FROM tickets WHERE order_id=? AND ticket_type=tickets.ticket_type)
+            < (SELECT CASE tickets.ticket_type WHEN 'Kombi' THEN qty_kombi WHEN 'Matrosen' THEN qty_matrosen ELSE qty_seemann END FROM orders WHERE id=?)`)
+          .bind(id,stamp,stamp,code,id,id,id),
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT ?,?,'ticket.assigned','ticket',?,? WHERE EXISTS (SELECT 1 FROM tickets WHERE code=? AND order_id=? AND assigned_at=?)`)
+          .bind(makeId(),actor,code,JSON.stringify({order_id:id}),code,id,stamp)
+      ]);
+      if((update[0]?.meta?.changes||0)!==1)fail(409,'Ticketart bereits vollständig oder Ticket zwischenzeitlich vergeben.');
+      return json(await getOrder(db,id));
+    }
+    if(method==='POST'&&op==='customer'){
+      const b=await readBody(request);
+      const name=clean(b.full_name,120),address=clean(b.address_line1,180),postal=clean(b.postal_code,20),city=clean(b.city,90);
+      const email=clean(b.email,150),phone=clean(b.phone,50);
+      if(name.length<2||!address||!postal||!city)fail(400,'Name oder Versandanschrift unvollständig.');
+      if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Ungültige E-Mail-Adresse.');
+      const changed=await db.prepare(`UPDATE customers SET full_name=?,address_line1=?,address_line2=?,postal_code=?,city=?,email=?,phone=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=(SELECT customer_id FROM orders WHERE id=? AND shipping_status NOT IN ('sent','handed_over'))`)
+        .bind(name,address,clean(b.address_line2,180)||null,postal,city,email||null,phone||null,id).run();
+      if((changed.meta?.changes||0)!==1)fail(409,'Anschrift konnte nicht geändert werden; Bestellung möglicherweise bereits versendet.');
+      await audit(db,actor,'customer.updated','order',id).run();
+      return json(await getOrder(db,id));
+    }
+    if(method==='POST'&&op==='unassign'){
+      const b=await readBody(request),code=parseCode(b.code);
+      if(!code)fail(400,'Ungültige Ticketkennung.');
+      const order=await db.prepare('SELECT shipping_status FROM orders WHERE id=?').bind(id).first();
+      if(!order||!['not_ready','ready'].includes(order.shipping_status))fail(409,'Zuordnung nach Versand nicht mehr korrigierbar.');
+      const changed=await db.prepare(`UPDATE tickets SET order_id=NULL,status='available',assigned_at=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE code=? AND order_id=? AND status='assigned' AND admitted_at IS NULL
+        AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(code,id,id).run();
+      if((changed.meta?.changes||0)!==1)fail(409,'Ticket konnte nicht freigegeben werden.');
+      await db.batch([
+        db.prepare("UPDATE orders SET shipping_status='not_ready',updated_at=CURRENT_TIMESTAMP WHERE id=? AND shipping_status='ready'").bind(id),
+        audit(db,actor,'ticket.unassigned','ticket',code,{order_id:id})
+      ]);
+      return json(await getOrder(db,id));
+    }
+    if(method==='POST'&&op==='payment'){
+      const b=await readBody(request),direction=clean(b.direction,20),method=clean(b.method,20),reference=clean(b.reference,100);
+      if(!['received','refunded'].includes(direction)||!['bank','cash','card','other'].includes(method))fail(400,'Zahlungsart ungültig.');
+      const amount=positive(b.amount_cents,'Betrag');
+      const payid=clean(b.idempotency_key,80);
+      if(!/^[0-9a-f-]{36}$/.test(payid))fail(400,'Buchungs-ID fehlt.');
+      const order=await db.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
+      if(!order)fail(404,'Bestellung nicht gefunden.');
+      const previously=await db.prepare('SELECT * FROM payments WHERE id=?').bind(payid).first();
+      if(previously){
+        if(previously.order_id!==id||previously.direction!==direction||previously.method!==method||previously.amount_cents!==amount||
+          (previously.reference||'')!==reference)fail(409,'Buchungs-ID wird bereits für eine andere Zahlung verwendet.');
+        return json(await getOrder(db,id));
+      }
+      if(order.shipping_status==='cancelled')fail(409,'Stornierte Bestellung.');
+      if(direction==='refunded'&&amount>order.paid_amount_cents)fail(409,'Erstattung darf die vorhandenen Zahlungseingänge nicht überschreiten.');
+      await db.batch([
+        db.prepare(`INSERT OR IGNORE INTO payments(id,order_id,direction,method,amount_cents,reference,created_by)
+          VALUES(?,?,?,?,?,?,?)`).bind(payid,id,direction,method,amount,reference||null,actor),
+        db.prepare(`UPDATE orders SET paid_amount_cents=(SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?),
+          payment_status=(CASE
+            WHEN (SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?)=0
+              THEN (CASE WHEN EXISTS(SELECT 1 FROM payments WHERE order_id=? AND direction='refunded') THEN 'refunded' ELSE 'unpaid' END)
+            WHEN (SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?)>=total_amount_cents THEN 'paid'
+            ELSE 'partial' END),updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .bind(id,id,id,id,id),
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT ?,?,'payment.recorded','payment',?,? WHERE EXISTS (SELECT 1 FROM payments WHERE id=? AND order_id=?)`)
+          .bind(makeId(),actor,payid,JSON.stringify({order_id:id,direction,amount,method}),payid,id)
+      ]);
+      return json(await getOrder(db,id));
+    }
+    if(method==='POST'&&op==='dispatch'){
+      const b=await readBody(request),status=clean(b.status,30);
+      if(!['ready','sent'].includes(status))fail(400,'Ungültiger Versandstatus.');
+      const shipped=status==='sent';
+      const res=await db.prepare(`UPDATE orders SET shipping_status=?,shipped_at=(CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE shipped_at END),updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND shipping_status IN ('not_ready','ready') AND payment_status='paid'
+          AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()}`).bind(status,shipped?1:0,id).run();
+      if((res.meta?.changes||0)!==1)fail(409,'Versand nicht möglich: Zahlung oder Ticketzuordnung unvollständig, oder bereits versendet.');
+      await audit(db,actor,shipped?'order.sent':'order.ready','order',id).run();
+      return json(await getOrder(db,id));
+    }
+  }
+  if(method==='POST'&&path==='/api/tickets/import'){
+    const b=await readBody(request);
+    if(!Array.isArray(b.urls)||b.urls.length<1||b.urls.length>150)fail(400,'Pro Import 1–150 Codes.');
+    const map=new Map();
+    for(const value of b.urls){
+      const code=parseCode(value);
+      if(!code)fail(400,'Ungültige Ticket-URL in der Liste.');
+      const url=`https://sturmflutfestival.de/info/?t=${code}`;
+      map.set(code,{url,type:types[code[0]]});
+    }
+    const items=[...map].map(([code,entry])=>db.prepare(`INSERT OR IGNORE INTO tickets(code,qr_url,ticket_type,print_batch,status)
+      VALUES(?,?,?,'SFO27-01','available')`).bind(code,entry.url,entry.type));
+    const result=await db.batch(items);
+    const added=result.reduce((sum,item)=>sum+(item.meta?.changes||0),0);
+    const count=await db.prepare('SELECT COUNT(*) AS total FROM tickets').first();
+    return json({received:b.urls.length,distinct:map.size,added,total:count.total});
+  }
+  fail(404,'Unbekannter Vorgang.');
+}
+export default {
+  async fetch(request, env){
+    const url=new URL(request.url);
+    if(!url.pathname.startsWith('/api/'))return new Response('Nicht gefunden',{status:404,headers:COMMON_HEADERS});
+    try{
+      if(request.method==='POST')enforceOrigin(request);
+      const actor=await accessEmail(request,env);
+      return await handleApi(request,env,actor);
+    }catch(e){
+      if(e.status)return json({error:e.message},e.status);
+      console.error('SturmKnoten server error',e?.message||'unknown');
+      return json({error:'Serverfehler. Der Vorgang wurde nicht bestätigt. Bitte Status prüfen.'},500);
+    }
   }
 };
