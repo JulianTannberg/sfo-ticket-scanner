@@ -47,10 +47,9 @@ async function listOrders(){
 }
 async function selectOrder(id){
   stopCamera();
-  try{current=await api('/api/orders/'+encodeURIComponent(id));
-    try{const pack=await api('/api/envelopes');envelopeBatch=pack.envelopes||[];}catch{/* Not yet migrated: existing order view remains usable. */}
-    renderOrder();await listOrders();showTab('orders');}
-  catch(e){alertUser(e.message,'error');}
+  // Dedicated full page: no dashboard counters, menus, or long detail panel above scanning.
+  if(!/^[a-f0-9-]{36}$/.test(id)){alertUser('Ungültige Bestellnummer.','error');return;}
+  window.location.assign('/bestellung.html?id='+encodeURIComponent(id));
 }
 function renderOrder(){
   if(!current)return;
@@ -384,10 +383,7 @@ async function createTestOrder(){
     const result=await api('/api/test-order','POST',{});
     current=result;
     $('searchOrders').value='';
-    await Promise.all([listOrders(),overview()]);
-    showTab('orders');
     await selectOrder(result.order.id);
-    alertUser('🧪 Testbestellung Max Mustermann geöffnet. 1 Matrosen-Ticket. Nach dem Test wieder löschen.','success');
   }catch(e){alertUser('Testbestellung nicht angelegt: '+e.message,'error');}
   finally{btn.disabled=false;}
 }
@@ -413,7 +409,7 @@ async function createOrder(e){
   }catch(err){alertUser(err.message,'error');return;}
   const btn=$('createOrderBtn');btn.disabled=true;
   try{const result=await api('/api/orders','POST',data);form.reset();
-    alertUser('Bestellung gespeichert. Jetzt gedruckte Tickets dem Käufer zuordnen.','success');await Promise.all([listOrders(),overview()]);current=result;renderOrder();showTab('orders');await listOrders();}
+    alertUser('Bestellung gespeichert.','success');await selectOrder(result.order.id);}
   catch(err){alertUser(err.message,'error');}finally{btn.disabled=false;}
 }
 function csvUrls(text){
