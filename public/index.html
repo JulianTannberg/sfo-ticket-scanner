@@ -12,7 +12,7 @@
 <div id="systemAlert" class="alert warning" role="status">Zugang zur Datenbank wird geprüft …</div>
 <section id="mainApp" hidden>
   <section class="overview" aria-label="Bestandsübersicht"><div><b id="countTickets">–</b><small>Codes importiert</small></div><div><b id="countAssigned">–</b><small>Zugeordnet</small></div><div><b id="countOrders">–</b><small>Bestellungen</small></div><div><b id="countRevenue">–</b><small>Zahlungen netto</small></div></section>
-  <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><button type="button" data-tab="import">QR-Codes importieren</button></nav>
+  <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><button type="button" data-tab="import">QR-Codes importieren</button><button type="button" data-tab="envelopes">Umschläge gesammelt drucken</button></nav>
   <section id="tab-orders" class="tabcontent">
     <div class="cols"><section class="panel">
       <h2>Kunden & Bestellungen</h2><label for="searchOrders">Nach Kundenname oder Bestellnummer suchen</label><input id="searchOrders" placeholder="Name oder Bestellnummer" autocomplete="off"><div class="list" id="orderList"><p class="quiet">Noch keine Bestellungen.</p></div>
@@ -34,6 +34,19 @@
       <div class="flexactions"><button class="secondary" type="button" id="sampleEnvelopeBtn">Musterumschlag drucken (ohne Speichern)</button><button class="primary" type="submit" id="createOrderBtn">Bestellung sicher speichern</button></div>
       <p class="quiet">Der Musterumschlag enthält ausschließlich erfundene Daten. Er legt keine Bestellung an und verändert keine Ticketcodes.</p>
     </form>
+  </section>
+  <section id="tab-envelopes" class="tabcontent" hidden>
+    <div class="panel">
+      <h2>Sammeldruck – DIN lang</h2>
+      <p>Alle <b>noch nicht versendeten</b> Bestellungen in einem Druckauftrag: <b>ein Umschlag pro Bestellung</b>, alphabetisch nach Kundenname. Bereits versendete oder stornierte Bestellungen werden nicht mitgedruckt.</p>
+      <div class="flexactions">
+        <button type="button" class="secondary" id="checkEnvelopes">Offene Bestellungen prüfen</button>
+        <button type="button" class="primary" id="printAllEnvelopes" disabled>Alle offenen Umschläge drucken</button>
+        <button type="button" class="secondary" id="printThreeSamples">3 Musterumschläge testen</button>
+      </div>
+      <p id="bulkState" class="quiet" role="status">Noch keine Bestellungen geladen.</p>
+      <p class="quiet">Im Druckdialog „Umschlag DL“, Originalgröße und den richtigen Drucker auswählen. Zunächst nur die Vorschau prüfen. **Der Sammeldruck setzt keinen Versandstatus** – so entsteht kein falscher Versandnachweis.</p>
+    </div>
   </section>
   <section id="tab-import" class="tabcontent" hidden>
     <div class="panel"><h2>Die gedruckten QR-Codes importieren</h2>
