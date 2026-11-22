@@ -138,6 +138,18 @@ async function handleApi(request,env,actor){
       ORDER BY o.created_at DESC,o.id DESC LIMIT 150`).bind(q,`%${q}%`,`%${q}%`).all();
     return json({orders:rows.results||[]});
   }
+  if(method==='GET'&&path==='/api/envelopes'){
+    // Restricted to the verified admin like all API routes. Never expose on public pages.
+    const list=await db.prepare(`SELECT o.id,o.external_order_id,o.shipping_status,
+      c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city
+      FROM orders o JOIN customers c ON c.id=o.customer_id
+      WHERE o.shipping_status IN ('not_ready','ready')
+      ORDER BY c.full_name COLLATE NOCASE,o.created_at,o.id
+      LIMIT 2001`).all();
+    const rows=list.results||[];
+    if(rows.length>2000)fail(413,'Mehr als 2000 offene Bestellungen. Bitte Druck in Gruppen aufteilen.');
+    return json({envelopes:rows});
+  }
   if(method==='POST'&&path==='/api/orders'){
     const b=await readBody(request), full_name=clean(b.full_name,120);
     if(full_name.length<2)fail(400,'Kundenname fehlt.');
