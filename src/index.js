@@ -388,9 +388,13 @@ async function handleApi(request,env,actor){
       if(!code)fail(400,'Ungültige Ticketkennung.');
       const order=await db.prepare('SELECT shipping_status FROM orders WHERE id=?').bind(id).first();
       if(!order||!['not_ready','ready'].includes(order.shipping_status))fail(409,'Zuordnung nach Versand nicht mehr korrigierbar.');
+      await ensureEnvelopeSchema(db);
+      const packed=await db.prepare('SELECT 1 FROM envelope_progress WHERE order_id=? AND packed_at IS NOT NULL').bind(id).first();
+      if(packed)fail(409,'Umschlag bereits als verpackt bestätigt. Erst Verpackungsstatus zurücknehmen.');
       const changed=await db.prepare(`UPDATE tickets SET order_id=NULL,status='available',assigned_at=NULL,updated_at=CURRENT_TIMESTAMP
         WHERE code=? AND order_id=? AND status='assigned' AND admitted_at IS NULL
-        AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))`).bind(code,id,id).run();
+        AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))
+        AND NOT EXISTS(SELECT 1 FROM envelope_progress WHERE order_id=? AND packed_at IS NOT NULL)`).bind(code,id,id,id).run();
       if((changed.meta?.changes||0)!==1)fail(409,'Ticket konnte nicht freigegeben werden.');
       await db.batch([
         db.prepare("UPDATE orders SET shipping_status='not_ready',updated_at=CURRENT_TIMESTAMP WHERE id=? AND shipping_status='ready'").bind(id),
@@ -432,6 +436,7 @@ async function handleApi(request,env,actor){
       return json(await getOrder(db,id));
     }
     if(method==='POST'&&op==='dispatch'){
+      await ensureEnvelopeSchema(db);
       const b=await readBody(request),status=clean(b.status,30);
       if(!['ready','sent'].includes(status))fail(400,'Ungültiger Versandstatus.');
       const shipped=status==='sent';
