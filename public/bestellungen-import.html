@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#10272c">
+<title>Bestellungen importieren · SturmKnoten 2027</title>
+<link rel="stylesheet" href="/style.css"><script src="/bestellungen-import.js" defer></script>
+</head>
+<body class="order-body">
+<main class="import-shell">
+<header class="order-top"><a href="/" class="order-back">← Zurück</a><span>STURMKNOTEN · 2027</span></header>
+<h1>Bestellungen übernehmen</h1>
+<p class="quiet">CSV-Datei auswählen oder eine kopierte Tabelle aus Excel einfügen. Deine Daten werden erst beim bestätigten Import an die geschützte Datenbank geschickt.</p>
+<div id="importStatus" role="status" class="alert warning">Noch keine Bestellungen geladen.</div>
+<section class="panel">
+  <h2>1. Daten einfügen</h2>
+  <label for="sourceFile">CSV-Datei</label>
+  <input id="sourceFile" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain">
+  <label for="sourceText">Oder kopierte Tabellenzeilen</label>
+  <textarea id="sourceText" rows="5" placeholder="Bestellnummer;Name;Straße;PLZ;Ort;Kombi;Matrosen;Seemann;Gesamtbetrag;Porto" spellcheck="false"></textarea>
+  <div class="flexactions"><button id="parseSource" type="button" class="secondary">Tabelle prüfen</button><button id="demoCsv" type="button" class="secondary">Muster ansehen</button></div>
+  <p class="quiet">Eine Tabellenzeile = eine Bestellung. Sollte wpShopGermany mehrere Positionen pro Bestellung liefern, müssen wir das Exportformat erst prüfen.</p>
+</section>
+<section class="panel" id="mappingSection" hidden>
+  <h2>2. Spalten zuordnen</h2>
+  <p class="quiet" id="mappingHint"></p>
+  <div id="mappingFields" class="mapping-fields"></div>
+  <label class="import-check"><input id="trustPaid" type="checkbox"><span>Nur bei ausdrücklich als „bezahlt“ / „Zahlung akzeptiert“ markierten Bestellungen den vollen Betrag als erhalten übernehmen.</span></label>
+  <p class="quiet">Ohne bestätigten Zahlungseingang bleibt der Zahlungsstatus <strong>offen</strong>. Unbekannte Preise oder Ticketmengen werden nicht geraten.</p>
+  <button id="preparePreview" type="button" class="primary">Vorschau erstellen</button>
+</section>
+<section class="panel" id="previewSection" hidden>
+  <h2>3. Alles kontrollieren</h2>
+  <p id="previewInfo" class="quiet"></p>
+  <div class="import-scroll"><table class="import-table"><thead><tr><th>Nr.</th><th>Empfänger</th><th>Tickets</th><th>Gesamt</th><th>Bezahlt</th></tr></thead><tbody id="previewRows"></tbody></table></div>
+  <p id="previewWarning" class="state" role="status"></p>
+  <button id="confirmImport" type="button" class="primary" disabled>Geprüfte Bestellungen übernehmen</button>
+  <p class="quiet">Vorhandene Bestellnummern werden übersprungen, nicht überschrieben. Nach dem Import bitte einzelne Bestellungen auf Richtigkeit prüfen.</p>
+</section>
+</main>
+</body></html>
