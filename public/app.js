@@ -5,6 +5,7 @@ const fmt=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currenc
 const euro=s=>{s=String(s||'').trim();if(!/^(0|[1-9]\d{0,6})([,.]\d{1,2})?$/.test(s))throw Error('Euro-Betrag ungültig: '+s);const [a,b='']=s.replace(',','.').split('.');return Number(a)*100+Number(b.padEnd(2,'0'));};
 const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
 let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
+let userRole='admin';
 let cameraMode='assign';
 let envelopeBatch=[],printPreviewIds=[],envelopeSelection=new Set();
 const names={Kombi:'Kombi',Matrosen:'Matrosen',Seemann:'Seemann'};
@@ -24,6 +25,7 @@ function showTab(tab){
   document.querySelectorAll('.tabcontent').forEach(e=>e.hidden=e.id!=='tab-'+tab);
 }
 async function overview(){
+  if(userRole!=='admin')return;
   const d=await api('/api/overview');
   $('countTickets').textContent=d.tickets.reduce((n,r)=>n+Number(r.count),0);
   $('countAssigned').textContent=d.tickets.filter(r=>r.status==='assigned').reduce((n,r)=>n+Number(r.count),0);
@@ -455,7 +457,21 @@ async function init(){
   let timer; $('searchOrders').addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(()=>listOrders().catch(err=>alertUser(err.message,'error')),350);});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera();});window.addEventListener('pagehide',stopCamera);
   try{const who=await api('/api/me');
-    $('mainApp').hidden=false;alertUser('Geschützt angemeldet. Verwaltung: '+who.email,'success');await Promise.all([overview(),listOrders()]);}
+    userRole=who.role||'admin';
+    if(userRole==='dispatch'){
+      document.querySelector('.overview').hidden=true;
+      for(const tab of ['import','check'])document.querySelector('[data-tab="'+tab+'"]').hidden=true;
+      const demoArea=$('createTestOrderBtn')?.closest('.box');
+      if(demoArea)demoArea.hidden=true;
+      document.querySelector('.header h1').textContent='Ticketversand';
+      document.querySelector('.header p').textContent='Bestellungen · Umschläge · QR-Codes · Versand';
+      document.querySelector('.smalltag').textContent='Versandzugang';
+      alertUser('Geschützt angemeldet · Versandzugang','success');
+    }else{
+      alertUser('Geschützt angemeldet · Administration','success');
+    }
+    $('mainApp').hidden=false;
+    await Promise.all([overview(),listOrders()]);}
   catch(e){alertUser('Verwaltung noch nicht freigeschaltet: '+e.message+' Bitte keine echten Kundendaten eingeben.','error');}
 }
 init();
