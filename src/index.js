@@ -155,7 +155,7 @@ function audit(db,actor,action,entity,id,metadata={}){
 function dispatchAllowed(method,path){
   if(method==='GET'&&['/api/me','/api/overview','/api/orders','/api/envelopes'].includes(path))return true;
   if(method==='POST'&&path==='/api/tickets/check')return true;
-  if(method==='POST'&&path==='/api/orders')return true;
+  if(method==='POST'&&['/api/orders','/api/orders/import'].includes(path))return true;
   if(method==='POST'&&path==='/api/envelopes/status')return true;
   if(/^\/api\/orders\/[a-f0-9-]{36}$/.test(path)&&method==='GET')return true;
   if(/^\/api\/orders\/[a-f0-9-]{36}\/(assign|unassign|customer|payment|dispatch)$/.test(path)&&method==='POST')return true;
@@ -354,6 +354,72 @@ async function handleApi(request,env,actor){
     const orderDeleteIndex=hasEnvelope?2:1;
     if((result[orderDeleteIndex]?.meta?.changes||0)!==1)fail(409,'Testbestellung konnte nicht vollständig gelöscht werden. Bitte Bestand prüfen.');
     return json({deleted:true,released:result[0]?.meta?.changes||0});
+  }
+  if(method==='POST'&&path==='/api/orders/import'){
+    // Server-side CSV mapped import. Never infer prices or mark shipping as sent.
+    // Import is idempotent by the external shop order number.
+    const b=await readBody(request);
+    if(!Array.isArray(b.orders)||b.orders.length<1||b.orders.length>20)
+      fail(400,'Je Importvorgang 1 bis 20 Bestellungen.');
+    const seen=new Set(),checked=[];
+    for(const x of b.orders){
+      if(!x||typeof x!=='object'||Array.isArray(x))fail(400,'Importzeile ungültig.');
+      const external=clean(x.external_order_id,80);
+      if(!external||seen.has(external))fail(400,'Jede Zeile benötigt eine eindeutige Bestellnummer.');
+      seen.add(external);
+      const name=clean(x.full_name,120),street=clean(x.address_line1,180),
+        postal=clean(x.postal_code,20),city=clean(x.city,90),
+        email=clean(x.email,150),phone=clean(x.phone,50);
+      if(name.length<2||!street||!postal||!city)fail(400,'Fehlende Lieferanschrift bei '+external);
+      if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'E-Mail ungültig bei '+external);
+      const qK=integer(x.qty_kombi,'Kombi',500),qM=integer(x.qty_matrosen,'Matrosen',100),
+        qS=integer(x.qty_seemann,'Seemann',100);
+      if(qK+qM+qS<1||qK+qM+qS>100)fail(400,'Ticketanzahl ungültig bei '+external);
+      const total=integer(x.total_amount_cents,'Gesamtbetrag'),
+        postage=integer(x.postage_cents??0,'Porto'),
+        paid=integer(x.paid_amount_cents??0,'Bereits bezahlt');
+      if(postage>total||paid>total)fail(400,'Porto oder Zahlung größer als Gesamtbetrag bei '+external);
+      const existing=await db.prepare('SELECT id FROM orders WHERE external_order_id=?').bind(external).first();
+      checked.push({external,name,street,postal,city,email,phone,add2:clean(x.address_line2,180),
+        qK,qM,qS,total,postage,paid,existing:Boolean(existing)});
+    }
+    let imported=0,skipped=0;const ids=[];
+    for(const item of checked){
+      if(item.existing){skipped++;continue;}
+      const id=makeId(),customerId=makeId(),stamp=new Date().toISOString(),
+        paymentId=makeId();
+      const rows=[
+        db.prepare(`INSERT INTO customers
+          (id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,'DE',?,?,?,?)`)
+          .bind(customerId,item.name,item.street,item.add2||null,item.postal,item.city,
+            item.email||null,item.phone||null,stamp,stamp),
+        db.prepare(`INSERT INTO orders
+          (id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,
+          paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,
+          internal_note,created_at,updated_at)
+          VALUES (?,?,?,'online',?,?,?,?, 'not_ready',?,?,?,NULL,?,?)`)
+          .bind(id,customerId,item.external,item.total,item.postage,item.paid,
+            item.paid===0?'unpaid':item.paid>=item.total?'paid':'partial',
+            item.qK,item.qM,item.qS,stamp,stamp)
+      ];
+      if(item.paid){
+        rows.push(db.prepare(`INSERT INTO payments(id,order_id,direction,method,amount_cents,reference,created_by)
+          VALUES(?,?,'received','other',?,?,?)`)
+          .bind(paymentId,id,item.paid,'CSV-Import '+item.external,actor));
+      }
+      rows.push(audit(db,actor,'order.imported','order',id,
+        {external:item.external,total:item.total,postage:item.postage,paid:item.paid}));
+      try{await db.batch(rows);}
+      catch(err){
+        // A concurrent import could have inserted the same order number.
+        const present=await db.prepare('SELECT id FROM orders WHERE external_order_id=?').bind(item.external).first();
+        if(present){skipped++;continue;}
+        throw err;
+      }
+      imported++;ids.push(id);
+    }
+    return json({imported,skipped,received:checked.length,ids});
   }
   if(method==='POST'&&path==='/api/orders'){
     const b=await readBody(request), full_name=clean(b.full_name,120);
