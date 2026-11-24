@@ -1,6 +1,7 @@
 // SturmKnoten 2027: secure ticket sales and dispatch API.
 // All dynamic routes deny access unless a signed Cloudflare Access token is
-// verified AND the identity email matches the explicitly configured admin.
+// verified AND the identity email matches the configured admin or dispatcher.
+// Dispatch access is limited server-side to sales/packing/shipping operations.
 // All input is parameterized; no customer data or QR secrets belong in GitHub.
 
 const COMMON_HEADERS = {
@@ -39,6 +40,8 @@ async function accessEmail(request, env){
   const team=String(env.TEAM_DOMAIN||'').replace(/\/$/,'');
   const audience=clean(env.ACCESS_AUD,128);
   const admin=clean(env.ADMIN_EMAIL,254).toLowerCase();
+  // Extra staff email is configured privately in Cloudflare, never in GitHub.
+  const dispatch=clean(env.DISPATCH_EMAIL,254).toLowerCase();
   if(!/^https:\/\/[\w-]+\.cloudflareaccess\.com$/.test(team)||!audience||!admin){
     fail(503,'Administrationszugang noch nicht vollständig eingerichtet.');
   }
@@ -54,7 +57,9 @@ async function accessEmail(request, env){
   if(payload.iss!==team||!(Array.isArray(payload.aud)?payload.aud:[payload.aud]).includes(audience)||
      typeof payload.exp!=='number'||payload.exp<=now||typeof payload.iat!=='number'||payload.iat>now+120||
      (typeof payload.nbf==='number'&&payload.nbf>now+120))fail(403,'Anmeldung abgelaufen oder für andere Anwendung.');
-  if(String(payload.email||'').toLowerCase()!==admin)fail(403,'Kein Zugriff auf diese Verwaltung.');
+  const verifiedEmail=String(payload.email||'').trim().toLowerCase();
+  const role=verifiedEmail===admin?'admin':(dispatch&&verifiedEmail===dispatch?'dispatch':null);
+  if(!role)fail(403,'Für diese E-Mail ist kein SturmKnoten-Zugang eingerichtet.');
   let certs;
   try {
     const res=await fetch(`${team}/cdn-cgi/access/certs`, {cf:{cacheTtl:600}});
@@ -68,7 +73,7 @@ async function accessEmail(request, env){
     const verified=await crypto.subtle.verify('RSASSA-PKCS1-v1_5',key,decodeBase64Url(pieces[2]),new TextEncoder().encode(`${pieces[0]}.${pieces[1]}`));
     if(!verified)fail(403,'Cloudflare-Signatur ungültig.');
   }catch(e){if(e.status)throw e;fail(403,'Cloudflare-Signatur ungültig.');}
-  return admin;
+  return {email:verifiedEmail,role};
 }
 async function readBody(request){
   const length=Number(request.headers.get('content-length')||0);
@@ -94,7 +99,7 @@ function enforceOrigin(request){
   if(request.headers.get('origin')!==expected||request.headers.get('x-sturmknoten')!=='1')fail(403,'Ungültige Anfrageherkunft');
   if(!(request.headers.get('content-type')||'').startsWith('application/json'))fail(415,'JSON erforderlich');
 }
-async function getOrder(db,id){
+async function getOrder(db,id,role='admin'){
   const order=await db.prepare(`SELECT o.*, c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,c.country,c.email,c.phone
     FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`).bind(id).first();
   if(!order)fail(404,'Bestellung nicht gefunden.');
@@ -102,6 +107,18 @@ async function getOrder(db,id){
     db.prepare('SELECT code,ticket_type,assigned_at FROM tickets WHERE order_id=? ORDER BY assigned_at,code').bind(id).all(),
     db.prepare('SELECT id,direction,method,amount_cents,reference,occurred_at FROM payments WHERE order_id=? ORDER BY occurred_at,id').bind(id).all()
   ]);
+  if(role==='dispatch'){
+    // Shipping staff need the address, quantities, and paid/unpaid status,
+    // not transaction references, audit history, or arbitrary private notes.
+    const safe={};
+    for(const key of [
+      'id','external_order_id','sales_channel','full_name','address_line1','address_line2',
+      'postal_code','city','email','phone','qty_kombi','qty_matrosen','qty_seemann',
+      'payment_status','shipping_status','total_amount_cents','paid_amount_cents','shipped_at'
+    ])safe[key]=order[key];
+    safe.internal_note=order.sales_channel==='internal_test'?'SYSTEMTEST - keine echte Bestellung':null;
+    return {order:safe,tickets:tickets.results||[],payments:[]};
+  }
   return {order,tickets:tickets.results||[],payments:payments.results||[]};
 }
 function orderCompleteClause(){
@@ -133,12 +150,31 @@ function audit(db,actor,action,entity,id,metadata={}){
     .bind(makeId(),actor,action,entity,id,JSON.stringify(metadata).slice(0,2000));
 }
 
+// Explicitly allow only operational routes for the second organizer.
+// This is server-side authorization: hidden buttons or direct API calls cannot bypass it.
+function dispatchAllowed(method,path){
+  if(method==='GET'&&['/api/me','/api/orders','/api/envelopes'].includes(path))return true;
+  if(method==='POST'&&path==='/api/tickets/check')return true;
+  if(method==='POST'&&path==='/api/orders')return true;
+  if(method==='POST'&&path==='/api/envelopes/status')return true;
+  if(/^\/api\/orders\/[a-f0-9-]{36}$/.test(path)&&method==='GET')return true;
+  if(/^\/api\/orders\/[a-f0-9-]{36}\/(assign|unassign|customer|dispatch)$/.test(path)&&method==='POST')return true;
+  return false;
+}
 async function handleApi(request,env,actor){
   if(!env.DB)fail(503,'Datenbank-Verbindung fehlt.');
   const db=env.DB;
+  const user=actor;actor=user.email;
   const url=new URL(request.url);
   const path=url.pathname, method=request.method;
-  if(method==='GET'&&path==='/api/me')return json({email:actor});
+  const role=user.role;
+  if(role==='dispatch'&&!dispatchAllowed(method,path))fail(403,'Dieser Vorgang ist nur für die Administration freigegeben.');
+  if(method==='GET'&&path==='/api/me')return json({email:user.email,role});
+  if(role==='dispatch'&&method==='POST'&&path==='/api/envelopes/status'){
+    // Do not allow fictitious test prints from a real shipping account.
+    const input=await request.clone().json().catch(()=>null);
+    if(input?.action==='demo_printed')fail(403,'Testfunktionen sind ausschließlich für die Administration.');
+  }
   if(method==='POST'&&path==='/api/tickets/check'){
     // Read-only QR test. Never assign, redeem, or log a ticket as scanned.
     const b=await readBody(request);
@@ -266,7 +302,7 @@ async function handleApi(request,env,actor){
   if(method==='POST'&&path==='/api/test-order'){
     // A reproducible demo order with fictional address. No customer input and no migration.
     const existing=await db.prepare("SELECT id FROM orders WHERE sales_channel='internal_test' AND internal_note='SYSTEMTEST - keine echte Bestellung' AND shipping_status='not_ready' LIMIT 1").first();
-    if(existing)return json(await getOrder(db,existing.id));
+    if(existing)return json(await getOrder(db,existing.id,role));
     const cid=makeId(),id=makeId(),stamp=new Date().toISOString();
     const external='DEMO-2027-'+id.slice(0,8);
     await db.batch([
@@ -279,7 +315,7 @@ async function handleApi(request,env,actor){
         .bind(id,cid,external,stamp,stamp),
       audit(db,actor,'test_order.created','order',id,{kind:'demo',ticket_type:'Matrosen'})
     ]);
-    return json(await getOrder(db,id),201);
+    return json(await getOrder(db,id,role),201);
   }
   if(method==='POST'&&path==='/api/test-order/delete'){
     const b=await readBody(request),id=clean(b.order_id,80);
@@ -336,12 +372,12 @@ async function handleApi(request,env,actor){
         .bind(id,cid,external,channel,total,postage,qK,qM,qS,note||null,stamp,stamp),
       audit(db,actor,'order.created','order',id,{external,qK,qM,qS,total})
     ]);
-    return json(await getOrder(db,id),201);
+    return json(await getOrder(db,id,role),201);
   }
   const match=path.match(/^\/api\/orders\/([a-f0-9-]{36})(?:\/(assign|unassign|payment|dispatch|customer))?$/);
   if(match){
     const id=match[1],op=match[2];
-    if(method==='GET'&&!op)return json(await getOrder(db,id));
+    if(method==='GET'&&!op)return json(await getOrder(db,id,role));
     if(method==='POST'&&op==='assign'){
       const b=await readBody(request),code=parseCode(b.code);
       if(!code)fail(400,'QR-Code hat kein gültiges Ticketformat.');
@@ -368,7 +404,7 @@ async function handleApi(request,env,actor){
           .bind(makeId(),actor,code,JSON.stringify({order_id:id}),code,id,stamp)
       ]);
       if((update[0]?.meta?.changes||0)!==1)fail(409,'Ticketart bereits vollständig oder Ticket zwischenzeitlich vergeben.');
-      return json(await getOrder(db,id));
+      return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='customer'){
       const b=await readBody(request);
@@ -381,7 +417,7 @@ async function handleApi(request,env,actor){
         .bind(name,address,clean(b.address_line2,180)||null,postal,city,email||null,phone||null,id).run();
       if((changed.meta?.changes||0)!==1)fail(409,'Anschrift konnte nicht geändert werden; Bestellung möglicherweise bereits versendet.');
       await audit(db,actor,'customer.updated','order',id).run();
-      return json(await getOrder(db,id));
+      return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='unassign'){
       const b=await readBody(request),code=parseCode(b.code);
@@ -400,7 +436,7 @@ async function handleApi(request,env,actor){
         db.prepare("UPDATE orders SET shipping_status='not_ready',updated_at=CURRENT_TIMESTAMP WHERE id=? AND shipping_status='ready'").bind(id),
         audit(db,actor,'ticket.unassigned','ticket',code,{order_id:id})
       ]);
-      return json(await getOrder(db,id));
+      return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='payment'){
       const b=await readBody(request),direction=clean(b.direction,20),method=clean(b.method,20),reference=clean(b.reference,100);
@@ -415,7 +451,7 @@ async function handleApi(request,env,actor){
       if(previously){
         if(previously.order_id!==id||previously.direction!==direction||previously.method!==method||previously.amount_cents!==amount||
           (previously.reference||'')!==reference)fail(409,'Buchungs-ID wird bereits für eine andere Zahlung verwendet.');
-        return json(await getOrder(db,id));
+        return json(await getOrder(db,id,role));
       }
       if(order.shipping_status==='cancelled')fail(409,'Stornierte Bestellung.');
       if(direction==='refunded'&&amount>order.paid_amount_cents)fail(409,'Erstattung darf die vorhandenen Zahlungseingänge nicht überschreiten.');
@@ -433,7 +469,7 @@ async function handleApi(request,env,actor){
           SELECT ?,?,'payment.recorded','payment',?,? WHERE EXISTS (SELECT 1 FROM payments WHERE id=? AND order_id=?)`)
           .bind(makeId(),actor,payid,JSON.stringify({order_id:id,direction,amount,method}),payid,id)
       ]);
-      return json(await getOrder(db,id));
+      return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='dispatch'){
       await ensureEnvelopeSchema(db);
@@ -446,7 +482,7 @@ async function handleApi(request,env,actor){
           AND EXISTS(SELECT 1 FROM envelope_progress ep WHERE ep.order_id=orders.id AND ep.packed_at IS NOT NULL)`).bind(status,shipped?1:0,id).run();
       if((res.meta?.changes||0)!==1)fail(409,'Versand nicht möglich: Zahlung oder Ticketzuordnung unvollständig, oder bereits versendet.');
       await audit(db,actor,shipped?'order.sent':'order.ready','order',id).run();
-      return json(await getOrder(db,id));
+      return json(await getOrder(db,id,role));
     }
   }
   if(method==='POST'&&path==='/api/tickets/import'){
