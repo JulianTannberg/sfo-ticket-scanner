@@ -75,3 +75,19 @@ body.order-body{background:#092024}
   .pack-address-cols{grid-template-columns:1fr 1.4fr}
 }
 @media print{.order-body .order-shell{display:none!important}}
+
+/* Import und vereinfachter Versandzugang */
+.tabs .tablink{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:1px solid #34575d;border-radius:10px;background:#102c32;padding:10px 14px;color:#d0e0db;font-weight:750}
+.dispatch-overview{grid-template-columns:repeat(2,minmax(0,1fr));max-width:650px}
+.import-shell{max-width:960px;margin:0 auto;padding:12px 12px 45px}
+.import-shell h1{font-size:clamp(1.5rem,4vw,2.2rem);margin:5px 0 14px}
+.import-shell .panel{padding:18px}
+.import-shell .mapping-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;row-gap:6px}
+.import-shell .mapping-fields select{margin-top:5px}
+.import-check{display:flex;align-items:flex-start;gap:10px;margin:18px 0 10px}
+.import-check input{width:20px;height:20px;min-width:20px;margin:2px 0 0}
+.import-scroll{overflow-x:auto;max-height:440px;overflow-y:auto}
+.import-table{width:100%;border-collapse:collapse;font-size:.85rem;min-width:570px}
+.import-table th,.import-table td{border-bottom:1px solid #406168;padding:9px;text-align:left}
+.import-table th{position:sticky;top:0;background:#123039}
+@media(max-width:600px){.import-shell .mapping-fields{grid-template-columns:1fr}.tabs .tablink{grid-column:auto}.import-shell .panel{padding:14px}}
