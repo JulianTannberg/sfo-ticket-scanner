@@ -109,16 +109,15 @@ async function getOrder(db,id,role='admin'){
     db.prepare('SELECT id,direction,method,amount_cents,reference,occurred_at FROM payments WHERE order_id=? ORDER BY occurred_at,id').bind(id).all()
   ]);
   if(role==='dispatch'){
-    // Shipping staff need the address, quantities, and paid/unpaid status,
-    // not transaction references, audit history, or arbitrary private notes.
+    // Shipping and finance staff may view payment details, but not admin-only audit or test data.
     const safe={};
     for(const key of [
       'id','external_order_id','sales_channel','full_name','address_line1','address_line2',
       'postal_code','city','email','phone','qty_kombi','qty_matrosen','qty_seemann',
-      'payment_status','shipping_status','total_amount_cents','paid_amount_cents','shipped_at'
+      'payment_status','shipping_status','total_amount_cents','postage_cents','paid_amount_cents','shipped_at'
     ])safe[key]=order[key];
     safe.internal_note=order.sales_channel==='internal_test'?'SYSTEMTEST - keine echte Bestellung':null;
-    return {order:safe,tickets:tickets.results||[],payments:[]};
+    return {order:safe,tickets:tickets.results||[],payments:payments.results||[]};
   }
   return {order,tickets:tickets.results||[],payments:payments.results||[]};
 }
@@ -154,12 +153,12 @@ function audit(db,actor,action,entity,id,metadata={}){
 // Explicitly allow only operational routes for the second organizer.
 // This is server-side authorization: hidden buttons or direct API calls cannot bypass it.
 function dispatchAllowed(method,path){
-  if(method==='GET'&&['/api/me','/api/orders','/api/envelopes'].includes(path))return true;
+  if(method==='GET'&&['/api/me','/api/overview','/api/orders','/api/envelopes'].includes(path))return true;
   if(method==='POST'&&path==='/api/tickets/check')return true;
   if(method==='POST'&&path==='/api/orders')return true;
   if(method==='POST'&&path==='/api/envelopes/status')return true;
   if(/^\/api\/orders\/[a-f0-9-]{36}$/.test(path)&&method==='GET')return true;
-  if(/^\/api\/orders\/[a-f0-9-]{36}\/(assign|unassign|customer|dispatch)$/.test(path)&&method==='POST')return true;
+  if(/^\/api\/orders\/[a-f0-9-]{36}\/(assign|unassign|customer|payment|dispatch)$/.test(path)&&method==='POST')return true;
   return false;
 }
 async function handleApi(request,env,actor){
