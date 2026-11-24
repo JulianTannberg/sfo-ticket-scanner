@@ -103,6 +103,7 @@ async function getOrder(db,id,role='admin'){
   const order=await db.prepare(`SELECT o.*, c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,c.country,c.email,c.phone
     FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`).bind(id).first();
   if(!order)fail(404,'Bestellung nicht gefunden.');
+  if(role==='dispatch'&&order.sales_channel==='internal_test')fail(403,'Testbestellungen sind nicht für den Versandzugang freigegeben.');
   const [tickets,payments]=await Promise.all([
     db.prepare('SELECT code,ticket_type,assigned_at FROM tickets WHERE order_id=? ORDER BY assigned_at,code').bind(id).all(),
     db.prepare('SELECT id,direction,method,amount_cents,reference,occurred_at FROM payments WHERE order_id=? ORDER BY occurred_at,id').bind(id).all()
@@ -200,7 +201,8 @@ async function handleApi(request,env,actor){
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id) AS assigned_count
       FROM orders o JOIN customers c ON c.id=o.customer_id
       WHERE (?='' OR c.full_name LIKE ? OR o.external_order_id LIKE ?)
-      ORDER BY o.created_at DESC,o.id DESC LIMIT 150`).bind(q,`%${q}%`,`%${q}%`).all();
+        AND (?='admin' OR o.sales_channel<>'internal_test')
+      ORDER BY o.created_at DESC,o.id DESC LIMIT 150`).bind(q,`%${q}%`,`%${q}%`,role).all();
     return json({orders:rows.results||[]});
   }
   if(method==='GET'&&path==='/api/envelopes'){
@@ -214,9 +216,9 @@ async function handleApi(request,env,actor){
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Seemann') AS scanned_seemann
       FROM orders o JOIN customers c ON c.id=o.customer_id
       LEFT JOIN envelope_progress ep ON ep.order_id=o.id
-      WHERE o.shipping_status<>'cancelled'
+      WHERE o.shipping_status<>'cancelled' AND (?='admin' OR o.sales_channel<>'internal_test')
       ORDER BY c.full_name COLLATE NOCASE,o.created_at,o.id
-      LIMIT 2001`).all();
+      LIMIT 2001`).bind(role).all();
     const rows=list.results||[];
     if(rows.length>2000)fail(413,'Mehr als 2000 Bestellungen. Bitte zuerst in Gruppen arbeiten.');
     return json({envelopes:rows});
@@ -227,6 +229,11 @@ async function handleApi(request,env,actor){
     if(!['printed','unprinted','packed','unpacked','demo_printed'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
     const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
     if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
+    if(role==='dispatch'){
+      const placeholders=ids.map(()=>'?').join(',');
+      const demo=await db.prepare(`SELECT 1 FROM orders WHERE id IN (${placeholders}) AND sales_channel='internal_test' LIMIT 1`).bind(...ids).first();
+      if(demo)fail(403,'Testbestellungen dürfen nicht über den Versandzugang bearbeitet werden.');
+    }
     if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
     if(action==='demo_printed'){
       // Only for the explicitly labelled fictional demo order, without a physical print.
@@ -377,6 +384,10 @@ async function handleApi(request,env,actor){
   const match=path.match(/^\/api\/orders\/([a-f0-9-]{36})(?:\/(assign|unassign|payment|dispatch|customer))?$/);
   if(match){
     const id=match[1],op=match[2];
+    if(role==='dispatch'){
+      const row=await db.prepare('SELECT sales_channel FROM orders WHERE id=?').bind(id).first();
+      if(row?.sales_channel==='internal_test')fail(403,'Testbestellungen dürfen nicht über den Versandzugang bearbeitet werden.');
+    }
     if(method==='GET'&&!op)return json(await getOrder(db,id,role));
     if(method==='POST'&&op==='assign'){
       const b=await readBody(request),code=parseCode(b.code);
