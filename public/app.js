@@ -25,7 +25,6 @@ function showTab(tab){
   document.querySelectorAll('.tabcontent').forEach(e=>e.hidden=e.id!=='tab-'+tab);
 }
 async function overview(){
-  if(userRole!=='admin')return;
   const d=await api('/api/overview');
   $('countTickets').textContent=d.tickets.reduce((n,r)=>n+Number(r.count),0);
   $('countAssigned').textContent=d.tickets.filter(r=>r.status==='assigned').reduce((n,r)=>n+Number(r.count),0);
@@ -459,12 +458,13 @@ async function init(){
   try{const who=await api('/api/me');
     userRole=who.role||'admin';
     if(userRole==='dispatch'){
-      document.querySelector('.overview').hidden=true;
+      document.querySelector('.overview').classList.add('dispatch-overview');
+      document.querySelectorAll('.overview>div').forEach((box,i)=>{if(i<2)box.hidden=true;});
       for(const tab of ['import','check'])document.querySelector('[data-tab="'+tab+'"]').hidden=true;
       const demoArea=$('createTestOrderBtn')?.closest('.box');
       if(demoArea)demoArea.hidden=true;
-      document.querySelector('.header h1').textContent='Ticketversand';
-      document.querySelector('.header p').textContent='Bestellungen · Umschläge · QR-Codes · Versand';
+      document.querySelector('.header h1').textContent='Ticketversand & Einnahmen';
+      document.querySelector('.header p').textContent='Bestellungen · CSV-Übernahme · Umschläge · QR-Codes';
       document.querySelector('.smalltag').textContent='Versandzugang';
       alertUser('Geschützt angemeldet · Versandzugang','success');
     }else{
