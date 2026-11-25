@@ -301,7 +301,8 @@ async function checkTicket(value){
     const result=await api('/api/tickets/check','POST',{code:String(value)});
     if(!result.recognized){checkState(result.reason==='format'?'Kein gültiger Sturmflut-Ticketcode.':'Code nicht in den 700 importierten Tickets gefunden.',true);return;}
     const label=result.ticket_type||'Unbekannte Ticketart';
-    const status=result.status==='available'?'noch keiner Bestellung zugeordnet':
+    const status=result.sales_point?'bei Verkaufsstelle '+result.sales_point:
+      result.status==='available'?'noch keiner Bestellung zugeordnet':
       result.status==='assigned'?'bereits einer Bestellung zugeordnet':
       result.status==='blocked'?'gesperrt':'ungültig/storniert';
     checkState('Erkannt: '+label+' · '+status+'. Dieser Test hat nichts verändert.');
