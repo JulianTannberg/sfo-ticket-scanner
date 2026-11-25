@@ -31,7 +31,7 @@ async function loadStock(){
  const p=points.find(x=>x.id===currentId);
  if(!p){$('salesStockSummary').textContent='Keine Verkaufsstelle ausgewählt.';return;}
  const stock=await api('/api/sales-points/'+currentId+'/tickets');
- $('salesStockSummary').textContent=p.ticket_count+' Tickets vor Ort · Kombi '+p.kombi_count+' · Matrosen '+p.matrosen_count+' · Seemann '+p.seemann_count;
+ $('salesStockSummary').textContent=p.ticket_count+(p.name==='Privat verkauft'?' privat verkauft · Kombi ':' Tickets vor Ort · Kombi ')+p.kombi_count+' · Matrosen '+p.matrosen_count+' · Seemann '+p.seemann_count;
  if(!stock.tickets.length){listing.append(make('li','quiet','Noch keine Tickets ausgegeben.'));return;}
  for(const t of stock.tickets){
   const li=make('li'),text=make('span');
@@ -111,13 +111,14 @@ async function photo(file){
 async function init(){
  try{
   const who=await api('/api/me');
-  $('salesApp').hidden=false;info('Angemeldet: '+(who.role==='dispatch'?'Versand & Finanzen':'Administration'));
+  $('salesApp').hidden=false;info('Angemeldet: '+(who.role==='dispatch'?'Versand & Zahlungskontrolle':'Administration'));
   await loadPoints();
  }catch(e){info('Zugang oder Datenbank nicht verfügbar: '+e.message,true);return;}
  $('salesPointSelect').addEventListener('change',async e=>{
   stopCamera();currentId=e.target.value;
   try{await loadStock();}catch(err){state(err.message,true);}
  });
+ $('privateChannel').addEventListener('click',async()=>{try{stopCamera();const result=await api('/api/sales-points','POST',{name:'Privat verkauft'});currentId=result.point.id;await loadPoints();state('Privat verkauft ausgewählt.');}catch(e){state(e.message,true);}});
  $('salesPointForm').addEventListener('submit',async e=>{
   e.preventDefault();const input=$('salesPointName'),name=input.value.trim();
   if(name.length<2){state('Bitte einen Namen eingeben.',true);return;}

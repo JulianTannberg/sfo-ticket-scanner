@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/style.css"><script src="/verkaufsstellen.js" defer></script>
 </head><body class="order-body">
 <main class="order-shell">
-  <header class="order-top"><a class="order-back" href="/">← Übersicht</a><span>STURMKNOTEN · 2027</span></header>
+  <header class="order-top"><a class="order-back" href="/">← Übersicht</a><a class="order-back" href="/cdn-cgi/access/logout">Abmelden</a></header>
   <div id="salesAuthStatus" role="status" class="alert warning">Verkaufsstellen werden geladen …</div>
   <div id="salesApp" hidden>
     <div class="order-hero"><h1>Verkaufsstellen</h1><p class="quiet">Hardtickets an Tankstellen und andere Verkaufsstellen ausgeben oder zurücknehmen – ohne Verkauf oder Einlass zu buchen.</p></div>
@@ -17,7 +17,7 @@
       <select id="salesPointSelect"><option value="">Bitte auswählen</option></select>
       <details class="pack-optional">
         <summary>Neue Verkaufsstelle anlegen</summary>
-        <form id="salesPointForm" class="pack-form">
+        <button id="privateChannel" type="button" class="secondary">Privat verkauft auswählen / anlegen</button><form id="salesPointForm" class="pack-form">
           <label for="salesPointName">Name der Verkaufsstelle<input id="salesPointName" name="name" maxlength="90" placeholder="z. B. Tankstelle am Ort" required></label>
           <button type="submit" class="secondary">Verkaufsstelle speichern</button>
         </form>

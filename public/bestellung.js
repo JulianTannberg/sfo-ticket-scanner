@@ -43,7 +43,7 @@ async function reload(showStatus=false){
     const [order,pack]=await Promise.all([api('/api/orders/'+id),api('/api/envelopes')]);
     record=order;
     envelope=(pack.envelopes||[]).find(e=>e.id===id)||null;
-    if(!envelope)throw Error('Packlisteneintrag nicht gefunden.');
+
     render();
     $('orderView').hidden=false;
     if(showStatus)message('Bestellung aktualisiert.');
@@ -80,25 +80,26 @@ function render(){
     }
     list.append(item);
   }
-  const canAssign=!sent&&!packed&&!c.complete;
+  const eligible=o.payment_status==='paid'||demo;
+  const canAssign=eligible&&!sent&&!packed&&!c.complete;
   $('startScan').disabled=!canAssign;
   $('orderQrPhoto').disabled=!canAssign;
   $('manualAssign').disabled=!canAssign;
   $('manualCode').disabled=!canAssign;
   $('packStatus').textContent=packed?'✓ Vollständig verpackt':printed?(demo?'TEST: Druck simuliert · noch nicht verpackt':'Umschlag gedruckt · noch nicht verpackt'):'Umschlag noch nicht gedruckt';
   $('packStatus').className='pack-summary '+(packed?'pack-done':'');
-  $('confirmPrint').hidden=demo||printed||sent;
+  $('confirmPrint').hidden=demo||printed||sent||!eligible;$('printOne').disabled=!eligible||sent;
   $('demoPrint').hidden=!demo||printed||sent;
   $('confirmPacked').hidden=packed||sent;
-  $('confirmPacked').disabled=!printed||!c.complete||sent;
+  $('confirmPacked').disabled=!eligible||!printed||!c.complete||sent;
   $('undoPacked').hidden=!packed||sent;
   $('packHint').textContent=packed?'Fertig. Die Packliste hat die Verpackung gespeichert.':!printed?'Zuerst den Umschlagdruck bestätigen.':!c.complete?'Es fehlen noch Tickets. Bitte die richtige Ticketart einscannen.':'Alle Tickets stimmen. Jetzt die Verpackung bestätigen.';
   $('shippingAddress').textContent=lines(o).join('\n');
   const f=$('addressForm');for(const key of ['full_name','address_line1','address_line2','postal_code','city','email','phone'])f.elements[key].value=o[key]||'';
   const addressInputs=f.querySelectorAll('input');for(const field of addressInputs)field.disabled=sent;
   f.querySelector('button[type=submit]').disabled=sent;
-  $('paymentStatus').textContent='Erhalten: '+fmt(o.paid_amount_cents)+' von '+fmt(o.total_amount_cents)+' · '+(o.payment_status==='paid'?'bezahlt':'offen');
-  $('paymentForm').hidden=demo||sent;
+  const labels={unchecked:'Ungeprüft',open:'Zahlung offen',paid:'Bezahlt',partial:'Teilweise bezahlt',refunded:'Erstattet',partial_refund:'Teilweise erstattet'};$('paymentStatus').textContent=labels[o.review_state]||'Ungeprüft';$('paymentTop').textContent=$('paymentStatus').textContent+(o.shipping_status==='cancelled'?' · Storniert':'');
+  const pf=$('paymentForm');pf.hidden=demo||o.shipping_status==='cancelled';pf.elements.state.value=o.review_state||'unchecked';pf.elements.internal_note.value=o.internal_note||'';for(const k of ['qty_kombi','qty_matrosen','qty_seemann']){pf.elements[k].value=o[k];pf.elements[k].disabled=sent;} $('quantityEdit').hidden=sent;$('cancelOrder').hidden=sent;
   $('shippingStatus').textContent=statusName(o.shipping_status);
   const allowShipping=!demo&&!sent&&c.complete&&packed&&o.payment_status==='paid';
   $('markReady').disabled=!allowShipping;
@@ -186,15 +187,18 @@ async function saveAddress(e){
   try{await api('/api/orders/'+id+'/customer','POST',data);await reload();message('Anschrift gespeichert.');}
   catch(err){message('Anschrift nicht geändert: '+err.message,'error');}
 }
-async function savePayment(e){
-  e.preventDefault();
-  const f=e.currentTarget,data=new FormData(f);
-  try{
-    const amount=euro(data.get('amount_eur'));
-    await api('/api/orders/'+id+'/payment','POST',{
-      idempotency_key:crypto.randomUUID(),amount_cents:amount,method:data.get('method'),direction:data.get('direction'),reference:data.get('reference')});
-    f.reset();await reload();message('Zahlung gespeichert.');
-  }catch(err){message('Zahlung nicht gespeichert: '+err.message,'error');}
+async function savePayment(e,cancel=false){
+  e.preventDefault();if(!record)return;
+  const f=$('paymentForm'),o=record.order,data=new FormData(f),state=data.get('state');
+  if(!confirm(cancel?'Bestellung wirklich stornieren? Zugeordnete Tickets zuvor lösen.':'Zahlungsstatus und Änderungen speichern?'))return;
+  const body={state,expected_state:o.review_state,expected_updated_at:o.updated_at,internal_note:data.get('internal_note'),cancel};
+  if(!cancel&&['not_ready','ready'].includes(o.shipping_status)){
+    const quantities=Object.fromEntries(['qty_kombi','qty_matrosen','qty_seemann'].map(k=>[k,Number(data.get(k))]));
+    if(Object.keys(quantities).some(k=>quantities[k]!==o[k]))body.quantities=quantities;
+  }
+  const buttons=f.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+  try{await api('/api/orders/'+id+'/payment','POST',body);await reload();message(cancel?'Bestellung storniert.':'Änderungen gespeichert.');}
+  catch(err){message('Nicht gespeichert: '+err.message,'error');}finally{buttons.forEach(b=>b.disabled=false);}
 }
 async function dispatch(status){
   if(!confirm(status==='sent'?'Ist dieser Umschlag tatsächlich verschickt worden?':'Sind alle Tickets geprüft und der Umschlag versandbereit?'))return;
@@ -224,7 +228,7 @@ function setup(){
   $('undoPacked').addEventListener('click',()=>doAction('unpacked','Verpackung wieder zurücknehmen?','Verpackungsstatus zurückgenommen.'));
   $('printOne').addEventListener('click',printEnvelope);
   $('addressForm').addEventListener('submit',saveAddress);
-  $('paymentForm').addEventListener('submit',savePayment);
+  $('paymentForm').addEventListener('submit',e=>savePayment(e));$('cancelOrder').addEventListener('click',e=>savePayment(e,true));
   $('markReady').addEventListener('click',()=>dispatch('ready'));
   $('markSent').addEventListener('click',()=>dispatch('sent'));
   $('deleteDemo').addEventListener('click',deleteDemo);

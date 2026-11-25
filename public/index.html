@@ -8,14 +8,14 @@
 </head>
 <body>
 <main class="shell">
-<header class="header"><div><div class="eyebrow">STURMFLUT FESTIVAL · 2027</div><h1>Ticketverkauf & Versand</h1><p>Käufer erfassen · Tickets einscannen · Zahlung buchen · Umschlag drucken</p></div><div class="smalltag">Verwaltung · geschützt</div></header>
+<header class="header"><div><div class="eyebrow">STURMFLUT FESTIVAL · 2027</div><h1>Ticketverkauf & Versand</h1><p>Käufer erfassen · Tickets einscannen · Zahlung bestätigen · Umschlag drucken</p></div><div><span class="smalltag">Verwaltung · geschützt</span> <a class="tablink" href="/cdn-cgi/access/logout">Abmelden</a></div></header>
 <div id="systemAlert" class="alert warning" role="status">Zugang zur Datenbank wird geprüft …</div>
 <section id="mainApp" hidden>
-  <section class="overview" aria-label="Bestandsübersicht"><div><b id="countTickets">–</b><small>Codes importiert</small></div><div><b id="countAssigned">–</b><small>Zugeordnet</small></div><div><b id="countOrders">–</b><small>Bestellungen</small></div><div><b id="countRevenue">–</b><small>Zahlungen netto</small></div></section>
+  <section class="overview" aria-label="Bestandsübersicht"><div><b id="countTickets">–</b><small>Codes importiert</small></div><div><b id="countAssigned">–</b><small>Zugeordnet</small></div><div><b id="countOrders">–</b><small>Bestellungen</small></div><div><b id="countPaid">–</b><small>Bezahlt</small></div></section>
   <nav class="tabs" aria-label="Verwaltung"><button type="button" class="active" data-tab="orders">Bestellungen</button><button type="button" data-tab="create">Neue Bestellung</button><a class="tablink" href="/bestellungen-import.html">CSV / Liste übernehmen</a><a class="tablink" href="/verkaufsstellen.html">Verkaufsstellen</a><button type="button" data-tab="import">QR-Codes importieren</button><button type="button" data-tab="envelopes">Umschläge gesammelt drucken</button><button type="button" data-tab="check">QR sicher testen</button></nav>
   <section id="tab-orders" class="tabcontent">
     <div class="cols"><section class="panel">
-      <h2>Bestellungen</h2><p class="quiet">Namen antippen, um die Bestellung auf einer eigenen Seite zu öffnen.</p><label for="searchOrders">Nach Kundenname oder Bestellnummer suchen</label><input id="searchOrders" placeholder="Name oder Bestellnummer" autocomplete="off"><div class="list" id="orderList"><p class="quiet">Noch keine Bestellungen.</p></div>
+      <h2>Bestellungen</h2><p class="quiet">Namen antippen, um die Bestellung auf einer eigenen Seite zu öffnen.</p><label for="searchOrders">Nach Kundenname oder Bestellnummer suchen</label><input id="searchOrders" placeholder="Name oder Bestellnummer" autocomplete="off"><label>Filter<select id="orderFilter"><option value="all">Alle Bestellungen</option><option value="review">Zahlung prüfen</option><option value="ready">Bezahlt – noch nicht versendet</option><option value="sent">Versendet</option><option value="issues">Erstattet / storniert</option></select></label><div class="list" id="orderList"><p class="quiet">Noch keine Bestellungen.</p></div>
     </section></div>
   </section>
   <section id="tab-create" class="tabcontent" hidden>
@@ -28,7 +28,7 @@
       <div class="formgrid"><label>PLZ*<input name="postal_code" maxlength="20" required autocomplete="postal-code"></label><label>Ort*<input name="city" maxlength="90" required autocomplete="address-level2"></label></div>
       <div class="formgrid"><label>Telefon (optional)<input name="phone" maxlength="50" autocomplete="tel"></label><label>Interne Notiz<input name="internal_note" maxlength="500" placeholder="Nur intern sichtbar"></label></div>
       <h3>Bestellte Tickets</h3><div class="formgrid three"><label>Kombi<input type="number" name="qty_kombi" min="0" max="100" value="0" required></label><label>Matrosen<input type="number" name="qty_matrosen" min="0" max="100" value="0" required></label><label>Seemann<input type="number" name="qty_seemann" min="0" max="100" value="0" required></label></div>
-      <div class="formgrid"><label>Gesamtbetrag in € (inklusive Versand)*<input type="text" inputmode="decimal" name="total_eur" value="0,00" required></label><label>Davon Porto in €<input type="text" inputmode="decimal" name="postage_eur" value="0,00"></label></div>
+      <label>Bestelldatum (optional)<input name="order_date" type="date"></label>
       <div class="box">
         <h3>Test ohne echte Kundendaten</h3>
         <p class="quiet">Legt automatisch eine klar gekennzeichnete Musterbestellung an: <strong>Max Mustermann</strong>, Musterstraße 12, 12345 Musterstadt, <strong>1 Matrosen-Ticket</strong>. Du kannst sie anschließend wieder löschen und ein zugeordnetes Ticket freigeben.</p>
@@ -41,7 +41,7 @@
   <section id="tab-envelopes" class="tabcontent" hidden>
     <div class="panel">
       <h2>Sammeldruck – DIN lang</h2>
-      <p>Alle <b>noch nicht versendeten</b> Bestellungen in einem Druckauftrag: <b>ein Umschlag pro Bestellung</b>, alphabetisch nach Kundenname. Bereits versendete oder stornierte Bestellungen werden nicht mitgedruckt.</p>
+      <p>Alle <b>bezahlten, noch nicht versendeten</b> Bestellungen in einem Druckauftrag: <b>ein Umschlag pro Bestellung</b>, alphabetisch nach Kundenname. Bereits versendete oder stornierte Bestellungen werden nicht mitgedruckt.</p>
       <div class="flexactions">
         <button type="button" class="secondary" id="checkEnvelopes">Offene Bestellungen prüfen</button>
         <button type="button" class="primary" id="printAllEnvelopes" disabled>Alle offenen Umschläge drucken</button>
