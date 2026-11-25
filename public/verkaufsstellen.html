@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="de"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#10272c">
+<title>Verkaufsstellen · SturmKnoten</title>
+<link rel="stylesheet" href="/style.css"><script src="/verkaufsstellen.js" defer></script>
+</head><body class="order-body">
+<main class="order-shell">
+  <header class="order-top"><a class="order-back" href="/">← Übersicht</a><span>STURMKNOTEN · 2027</span></header>
+  <div id="salesAuthStatus" role="status" class="alert warning">Verkaufsstellen werden geladen …</div>
+  <div id="salesApp" hidden>
+    <div class="order-hero"><h1>Verkaufsstellen</h1><p class="quiet">Hardtickets an Tankstellen und andere Verkaufsstellen ausgeben oder zurücknehmen – ohne Verkauf oder Einlass zu buchen.</p></div>
+    <section class="pack-panel">
+      <h2>1. Verkaufsstelle auswählen</h2>
+      <label for="salesPointSelect">Verkaufsstelle</label>
+      <select id="salesPointSelect"><option value="">Bitte auswählen</option></select>
+      <details class="pack-optional">
+        <summary>Neue Verkaufsstelle anlegen</summary>
+        <form id="salesPointForm" class="pack-form">
+          <label for="salesPointName">Name der Verkaufsstelle<input id="salesPointName" name="name" maxlength="90" placeholder="z. B. Tankstelle am Ort" required></label>
+          <button type="submit" class="secondary">Verkaufsstelle speichern</button>
+        </form>
+      </details>
+      <div id="salesPointStats" class="state" role="status"></div>
+    </section>
+    <section class="pack-panel">
+      <h2>2. Vorgang auswählen</h2>
+      <div class="sales-action-switch" role="radiogroup" aria-label="Vorgang">
+        <label class="sales-mode"><input type="radio" name="salesMode" value="issue" checked> <strong>An Verkaufsstelle ausgeben</strong></label>
+        <label class="sales-mode"><input type="radio" name="salesMode" value="return"> <strong>Zurücknehmen</strong></label>
+      </div>
+      <p id="salesModeHint" class="quiet">Jeder gescannte QR-Code wird dieser Verkaufsstelle zugeordnet. Das zählt nicht als Verkauf oder Einlass.</p>
+    </section>
+    <section class="pack-panel">
+      <h2>3. Tickets einscannen</h2>
+      <div class="camera" id="salesCameraWrap"><video id="salesCameraView" autoplay muted playsinline></video></div>
+      <div class="pack-actions">
+        <button id="salesCameraToggle" type="button" class="primary">Handykamera starten</button>
+        <label for="salesQrPhoto" class="secondary pack-file">QR-Foto auswählen</label>
+        <input id="salesQrPhoto" type="file" accept="image/*" style="position:absolute;left:-9999px">
+      </div>
+      <p class="quiet">Die Kamera darf für mehrere Tickets eingeschaltet bleiben. Nacheinander jeweils einen QR-Code ins Bild halten.</p>
+      <p id="salesScanState" class="state" role="status" aria-live="polite">Noch kein Ticket gescannt.</p>
+      <details class="pack-optional"><summary>Ticketcode manuell eingeben</summary>
+        <div class="pack-actions"><input id="salesManualCode" placeholder="Ticketkennung oder vollständiger QR-Link" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button type="button" class="secondary" id="salesManualButton">Code übernehmen</button></div>
+      </details>
+    </section>
+    <section class="pack-panel">
+      <h2>Aktueller Bestand dieser Verkaufsstelle</h2>
+      <div id="salesStockSummary" class="pack-summary"></div>
+      <details class="pack-optional"><summary>Ticketcodes anzeigen</summary>
+        <ul id="salesStockList" class="ticketlist"></ul>
+      </details>
+      <p class="quiet">Hier wird erfasst, welche physischen Tickets dort liegen. Der tatsächliche Verkauf und die spätere Abrechnung werden getrennt dokumentiert.</p>
+    </section>
+  </div>
+</main></body></html>
