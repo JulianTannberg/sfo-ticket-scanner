@@ -7,15 +7,15 @@
 <link rel="stylesheet" href="/style.css"><script src="/verkaufsstellen.js" defer></script>
 </head><body class="order-body">
 <main class="order-shell">
-  <header class="order-top"><a class="order-back" href="/">← Übersicht</a><span>STURMKNOTEN · 2027</span></header>
+  <header class="order-top"><a class="order-back" href="/">← Übersicht</a><a class="order-back" href="/cdn-cgi/access/logout">Abmelden</a></header>
   <div id="salesAuthStatus" role="status" class="alert warning">Verkaufsstellen werden geladen …</div>
   <div id="salesApp" hidden>
-    <div class="order-hero"><h1>Verkaufsstellen</h1><p class="quiet">Hardtickets an Tankstellen und andere Verkaufsstellen ausgeben oder zurücknehmen – ohne Verkauf oder Einlass zu buchen.</p></div>
-    <section class="pack-panel">
+    <div class="order-hero"><h1>Verkaufsstellen</h1><p class="quiet">Hardtickets für Privatverkäufe und für Verkaufsstellen erfassen. Keine Finanzdaten und keine Einlassbuchung.</p></div>
+    <section class="pack-panel"><h2>Ticketverteilung</h2><div class="import-scroll"><table class="import-table"><thead><tr><th>Kanal</th><th>Kombi</th><th>Matrosen</th><th>Seemann</th><th>Summe</th></tr></thead><tbody id="distributionRows"></tbody></table></div><p class="quiet">Bestellungen zählen nur zugeordnete QR-Codes, Verkaufsstellen die ausgegebenen, nicht zurückgenommenen Tickets. Keine Aufteilung nach privaten Verkäufern.</p></section><section class="pack-panel">
       <h2>1. Verkaufsstelle auswählen</h2>
       <label for="salesPointSelect">Verkaufsstelle</label>
       <select id="salesPointSelect"><option value="">Bitte auswählen</option></select>
-      <details class="pack-optional">
+      <button id="privateChannel" type="button" class="secondary">Privat verkauft</button><details class="pack-optional">
         <summary>Neue Verkaufsstelle anlegen</summary>
         <form id="salesPointForm" class="pack-form">
           <label for="salesPointName">Name der Verkaufsstelle<input id="salesPointName" name="name" maxlength="90" placeholder="z. B. Tankstelle am Ort" required></label>
@@ -53,7 +53,7 @@
       <details class="pack-optional"><summary>Ticketcodes anzeigen</summary>
         <ul id="salesStockList" class="ticketlist"></ul>
       </details>
-      <p class="quiet">Hier wird erfasst, welche physischen Tickets dort liegen. Der tatsächliche Verkauf und die spätere Abrechnung werden getrennt dokumentiert.</p>
+      <p class="quiet">Hier wird erfasst, welche physischen Tickets dort liegen. Bei „Privat verkauft“ zählt jeder erfasste QR-Code als Privatverkauf. Bei anderen Stellen wird die Ausgabe dokumentiert, nicht der spätere Verkauf.</p>
     </section>
   </div>
 </main></body></html>

@@ -99,27 +99,21 @@ function enforceOrigin(request){
   if(request.headers.get('origin')!==expected||request.headers.get('x-sturmknoten')!=='1')fail(403,'Ungültige Anfrageherkunft');
   if(!(request.headers.get('content-type')||'').startsWith('application/json'))fail(415,'JSON erforderlich');
 }
+const reviewMap={unchecked:'unpaid',open:'unpaid',paid:'paid',partial:'partial',refunded:'refunded',partial_refund:'partial'};
+const reviewExpr="COALESCE(r.state,CASE o.payment_status WHEN 'paid' THEN 'paid' WHEN 'partial' THEN 'partial' WHEN 'refunded' THEN 'refunded' ELSE 'unchecked' END)";
+let reviewInit=null;
+async function ensureReviewSchema(db){
+  if(!reviewInit){reviewInit=db.prepare("CREATE TABLE IF NOT EXISTS order_review (order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE, state TEXT NOT NULL CHECK(state IN ('unchecked','open','paid','partial','refunded','partial_refund')), order_date TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();reviewInit.catch(()=>{reviewInit=null;});}
+  await reviewInit;
+}
 async function getOrder(db,id,role='admin'){
-  const order=await db.prepare(`SELECT o.*, c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,c.country,c.email,c.phone
-    FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`).bind(id).first();
+  const order=await db.prepare(`SELECT o.id,o.external_order_id,o.sales_channel,o.payment_status,o.shipping_status,o.qty_kombi,o.qty_matrosen,o.qty_seemann,o.internal_note,o.created_at,o.updated_at,o.shipped_at,
+    c.full_name,c.address_line1,c.address_line2,c.postal_code,c.city,c.country,c.email,c.phone,r.order_date,${reviewExpr} AS review_state
+    FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN order_review r ON r.order_id=o.id WHERE o.id=?`).bind(id).first();
   if(!order)fail(404,'Bestellung nicht gefunden.');
-  if(role==='dispatch'&&order.sales_channel==='internal_test')fail(403,'Testbestellungen sind nicht für den Versandzugang freigegeben.');
-  const [tickets,payments]=await Promise.all([
-    db.prepare('SELECT code,ticket_type,assigned_at FROM tickets WHERE order_id=? ORDER BY assigned_at,code').bind(id).all(),
-    db.prepare('SELECT id,direction,method,amount_cents,reference,occurred_at FROM payments WHERE order_id=? ORDER BY occurred_at,id').bind(id).all()
-  ]);
-  if(role==='dispatch'){
-    // Shipping and finance staff may view payment details, but not admin-only audit or test data.
-    const safe={};
-    for(const key of [
-      'id','external_order_id','sales_channel','full_name','address_line1','address_line2',
-      'postal_code','city','email','phone','qty_kombi','qty_matrosen','qty_seemann',
-      'payment_status','shipping_status','total_amount_cents','postage_cents','paid_amount_cents','shipped_at'
-    ])safe[key]=order[key];
-    safe.internal_note=order.sales_channel==='internal_test'?'SYSTEMTEST - keine echte Bestellung':null;
-    return {order:safe,tickets:tickets.results||[],payments:payments.results||[]};
-  }
-  return {order,tickets:tickets.results||[],payments:payments.results||[]};
+  if(role==='dispatch'&&order.sales_channel==='internal_test')fail(403,'Testbestellung nicht freigegeben.');
+  const tickets=await db.prepare('SELECT code,ticket_type,assigned_at FROM tickets WHERE order_id=? ORDER BY assigned_at,code').bind(id).all();
+  return {order,tickets:tickets.results||[]};
 }
 function orderCompleteClause(){
   return `(SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Kombi')=qty_kombi
@@ -197,6 +191,7 @@ async function handleApi(request,env,actor){
   const role=user.role;
   if(role==='dispatch'&&!dispatchAllowed(method,path))fail(403,'Dieser Vorgang ist nur für die Administration freigegeben.');
   if(method==='GET'&&path==='/api/me')return json({email:user.email,role});
+  await ensureReviewSchema(db);
   if(role==='dispatch'&&method==='POST'&&path==='/api/envelopes/status'){
     // Do not allow fictitious test prints from a real shipping account.
     const input=await request.clone().json().catch(()=>null);
@@ -204,7 +199,7 @@ async function handleApi(request,env,actor){
   }
   if(method==='GET'&&path==='/api/sales-points'){
     await ensureSalesPointSchema(db);
-    const [points,totals]=await Promise.all([
+    const [points,totals,distribution]=await Promise.all([
       db.prepare(`SELECT p.id,p.name,
         COUNT(CASE WHEN s.status='at_point' THEN 1 END) AS ticket_count,
         COUNT(CASE WHEN s.status='at_point' AND t.ticket_type='Kombi' THEN 1 END) AS kombi_count,
@@ -215,9 +210,10 @@ async function handleApi(request,env,actor){
         GROUP BY p.id,p.name ORDER BY p.name COLLATE NOCASE`).all(),
       db.prepare(`SELECT COUNT(*) AS free FROM tickets t WHERE t.status='available'
         AND t.order_id IS NULL AND t.admitted_at IS NULL
-        AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')`).first()
+        AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')`).first(),
+      db.prepare(`SELECT t.ticket_type,CASE WHEN t.status IN ('blocked','void') THEN 'blocked' WHEN t.order_id IS NOT NULL THEN 'order' WHEN s.status='at_point' THEN 'external' WHEN t.status='available' AND t.admitted_at IS NULL THEN 'free' ELSE 'other' END AS channel, COUNT(*) AS count FROM tickets t LEFT JOIN sales_point_tickets s ON s.ticket_code=t.code GROUP BY t.ticket_type,channel`).all()
     ]);
-    return json({points:points.results||[],free:totals?.free||0});
+    return json({points:points.results||[],free:totals?.free||0,distribution:distribution.results||[]});
   }
   if(method==='POST'&&path==='/api/sales-points'){
     await ensureSalesPointSchema(db);
@@ -296,7 +292,7 @@ async function handleApi(request,env,actor){
   if(method==='GET'&&path==='/api/overview'){
     const [tickets,orders]=await Promise.all([
       db.prepare(`SELECT ticket_type,status,COUNT(*) AS count FROM tickets GROUP BY ticket_type,status`).all(),
-      db.prepare(`SELECT COUNT(*) AS orders,COALESCE(SUM(paid_amount_cents),0) AS paid_cents,
+      db.prepare(`SELECT COUNT(*) AS orders,SUM(CASE WHEN payment_status='paid' AND shipping_status<>'cancelled' THEN 1 ELSE 0 END) AS paid_orders,
         SUM(CASE WHEN shipping_status='sent' THEN 1 ELSE 0 END) AS sent FROM orders`).first()
     ]);
     return json({tickets:tickets.results||[],orders});
@@ -304,12 +300,12 @@ async function handleApi(request,env,actor){
   if(method==='GET'&&path==='/api/orders'){
     const q=clean(url.searchParams.get('q'),80);
     const rows=await db.prepare(`SELECT o.id,o.external_order_id,o.created_at,o.payment_status,o.shipping_status,o.sales_channel,
-      o.total_amount_cents,o.paid_amount_cents,o.qty_kombi,o.qty_matrosen,o.qty_seemann,c.full_name,
+      o.updated_at,o.qty_kombi,o.qty_matrosen,o.qty_seemann,c.full_name,o.internal_note,r.order_date,${reviewExpr} AS review_state,
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id) AS assigned_count
-      FROM orders o JOIN customers c ON c.id=o.customer_id
+      FROM orders o JOIN customers c ON c.id=o.customer_id LEFT JOIN order_review r ON r.order_id=o.id
       WHERE (?='' OR c.full_name LIKE ? OR o.external_order_id LIKE ?)
         AND (?='admin' OR o.sales_channel<>'internal_test')
-      ORDER BY o.created_at DESC,o.id DESC LIMIT 150`).bind(q,`%${q}%`,`%${q}%`,role).all();
+      ORDER BY o.created_at DESC,o.id DESC LIMIT 1000`).bind(q,`%${q}%`,`%${q}%`,role).all();
     return json({orders:rows.results||[]});
   }
   if(method==='GET'&&path==='/api/envelopes'){
@@ -323,7 +319,7 @@ async function handleApi(request,env,actor){
       (SELECT COUNT(*) FROM tickets WHERE order_id=o.id AND ticket_type='Seemann') AS scanned_seemann
       FROM orders o JOIN customers c ON c.id=o.customer_id
       LEFT JOIN envelope_progress ep ON ep.order_id=o.id
-      WHERE o.shipping_status<>'cancelled' AND (?='admin' OR o.sales_channel<>'internal_test')
+      WHERE (o.payment_status='paid' OR o.sales_channel='internal_test' OR o.shipping_status='sent') AND o.shipping_status<>'cancelled' AND (?='admin' OR o.sales_channel<>'internal_test')
       ORDER BY c.full_name COLLATE NOCASE,o.created_at,o.id
       LIMIT 2001`).bind(role).all();
     const rows=list.results||[];
@@ -333,13 +329,29 @@ async function handleApi(request,env,actor){
   if(method==='POST'&&path==='/api/envelopes/status'){
     await ensureEnvelopeSchema(db);
     const b=await readBody(request), action=clean(b.action,20);
-    if(!['printed','unprinted','packed','unpacked','demo_printed'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
+    if(!['printed','unprinted','packed','unpacked','demo_printed','sent'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
     const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
     if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
     if(role==='dispatch'){
       const placeholders=ids.map(()=>'?').join(',');
       const demo=await db.prepare(`SELECT 1 FROM orders WHERE id IN (${placeholders}) AND sales_channel='internal_test' LIMIT 1`).bind(...ids).first();
       if(demo)fail(403,'Testbestellungen dürfen nicht über den Versandzugang bearbeitet werden.');
+    }
+    if(action==='sent'){
+      if(ids.length>80)fail(400,'Maximal 80 Bestellungen pro Versandgruppe.');
+      const marks=ids.map(()=>'?').join(',');
+      const eligible=`id IN (${marks}) AND shipping_status IN ('not_ready','ready')
+        AND payment_status='paid' AND sales_channel<>'internal_test'
+        AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()}
+        AND EXISTS(SELECT 1 FROM envelope_progress ep WHERE ep.order_id=orders.id AND ep.printed_at IS NOT NULL AND ep.packed_at IS NOT NULL)`;
+      // Both statements share an atomic D1 batch and identical eligibility checks.
+      const batch=await db.batch([
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT lower(hex(randomblob(16))),?,'order.sent','order',id,'{"bulk":true}' FROM orders WHERE ${eligible}`).bind(actor,...ids),
+        db.prepare(`UPDATE orders SET shipping_status='sent',shipped_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE ${eligible}`).bind(...ids)
+      ]);
+      const changed=batch[1].meta?.changes||0;
+      return json({changed,requested:ids.length,skipped:ids.length-changed});
     }
     if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
     if(action==='demo_printed'){
@@ -372,12 +384,12 @@ async function handleApi(request,env,actor){
       const stamp=new Date().toISOString();
       const batch=await db.batch([
         db.prepare(`INSERT INTO envelope_progress(order_id,updated_by)
-          SELECT id,? FROM orders WHERE id IN (${marks}) AND shipping_status IN ('not_ready','ready')
+          SELECT id,? FROM orders WHERE id IN (${marks}) AND shipping_status IN ('not_ready','ready') AND (payment_status='paid' OR sales_channel='internal_test')
           ON CONFLICT(order_id) DO NOTHING`).bind(actor,...ids),
         db.prepare(`UPDATE envelope_progress SET printed_at=?,updated_by=?
           WHERE order_id IN (${marks}) AND printed_at IS NULL AND packed_at IS NULL
           AND EXISTS(SELECT 1 FROM orders WHERE orders.id=envelope_progress.order_id
-            AND shipping_status IN ('not_ready','ready'))`).bind(stamp,actor,...ids),
+            AND shipping_status IN ('not_ready','ready') AND (payment_status='paid' OR sales_channel='internal_test'))`).bind(stamp,actor,...ids),
         db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
           SELECT lower(hex(randomblob(16))),?,'envelope.printed','order',ep.order_id,'{}'
           FROM envelope_progress ep WHERE ep.order_id IN (${marks})
@@ -399,7 +411,7 @@ async function handleApi(request,env,actor){
         const r=await db.prepare(`UPDATE envelope_progress SET packed_at=CURRENT_TIMESTAMP,updated_by=?
           WHERE order_id=? AND printed_at IS NOT NULL AND packed_at IS NULL
           AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready')
-            AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()})`).bind(actor,id,id).run();
+            AND (payment_status='paid' OR sales_channel='internal_test') AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()})`).bind(actor,id,id).run();
         changed+=r.meta?.changes||0;
         if(r.meta?.changes)await audit(db,actor,'envelope.packed','order',id).run();
       }else {
@@ -483,41 +495,24 @@ async function handleApi(request,env,actor){
       const qK=integer(x.qty_kombi,'Kombi',500),qM=integer(x.qty_matrosen,'Matrosen',100),
         qS=integer(x.qty_seemann,'Seemann',100);
       if(qK+qM+qS<1||qK+qM+qS>100)fail(400,'Ticketanzahl ungültig bei '+external);
-      const total=integer(x.total_amount_cents,'Gesamtbetrag'),
-        postage=integer(x.postage_cents??0,'Porto'),
-        paid=integer(x.paid_amount_cents??0,'Bereits bezahlt');
-      if(postage>total||paid>total)fail(400,'Porto oder Zahlung größer als Gesamtbetrag bei '+external);
+      const orderDate=clean(x.order_date,10);
+      if(orderDate&&!/^\d{4}-\d{2}-\d{2}$/.test(orderDate))fail(400,'Bestelldatum ungültig bei '+external);
       const existing=await db.prepare('SELECT id FROM orders WHERE external_order_id=?').bind(external).first();
-      checked.push({external,name,street,postal,city,email,phone,add2:clean(x.address_line2,180),
-        qK,qM,qS,total,postage,paid,existing:Boolean(existing)});
+      checked.push({external,name,street,postal,city,email,phone,add2:clean(x.address_line2,180),note:clean(x.internal_note,500),orderDate,
+        qK,qM,qS,existing:Boolean(existing)});
     }
     let imported=0,skipped=0;const ids=[];
     for(const item of checked){
       if(item.existing){skipped++;continue;}
-      const id=makeId(),customerId=makeId(),stamp=new Date().toISOString(),
-        paymentId=makeId();
+      const id=makeId(),customerId=makeId(),stamp=new Date().toISOString();
       const rows=[
-        db.prepare(`INSERT INTO customers
-          (id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,'DE',?,?,?,?)`)
-          .bind(customerId,item.name,item.street,item.add2||null,item.postal,item.city,
-            item.email||null,item.phone||null,stamp,stamp),
-        db.prepare(`INSERT INTO orders
-          (id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,
-          paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,
-          internal_note,created_at,updated_at)
-          VALUES (?,?,?,'online',?,?,?,?, 'not_ready',?,?,?,NULL,?,?)`)
-          .bind(id,customerId,item.external,item.total,item.postage,item.paid,
-            item.paid===0?'unpaid':item.paid>=item.total?'paid':'partial',
-            item.qK,item.qM,item.qS,stamp,stamp)
+        db.prepare(`INSERT INTO customers(id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,'DE',?,?,?,?)`).bind(customerId,item.name,item.street,item.add2||null,item.postal,item.city,item.email||null,item.phone||null,stamp,stamp),
+        db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
+          VALUES (?,?,?,'online','unpaid','not_ready',?,?,?,?,?,?)`).bind(id,customerId,item.external,item.qK,item.qM,item.qS,item.note||null,stamp,stamp),
+        db.prepare("INSERT INTO order_review(order_id,state,order_date) VALUES (?,'unchecked',?)").bind(id,item.orderDate||null),
+        audit(db,actor,'order.imported','order',id,{external:item.external})
       ];
-      if(item.paid){
-        rows.push(db.prepare(`INSERT INTO payments(id,order_id,direction,method,amount_cents,reference,created_by)
-          VALUES(?,?,'received','other',?,?,?)`)
-          .bind(paymentId,id,item.paid,'CSV-Import '+item.external,actor));
-      }
-      rows.push(audit(db,actor,'order.imported','order',id,
-        {external:item.external,total:item.total,postage:item.postage,paid:item.paid}));
       try{await db.batch(rows);}
       catch(err){
         // A concurrent import could have inserted the same order number.
@@ -538,8 +533,7 @@ async function handleApi(request,env,actor){
     if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Ungültige E-Mail-Adresse.');
     const qK=integer(b.qty_kombi,'Kombi',500),qM=integer(b.qty_matrosen,'Matrosen',100),qS=integer(b.qty_seemann,'Seemann',100);
     if(qK+qM+qS<1||qK+qM+qS>100)fail(400,'Mindestens ein Ticket, maximal 100 pro Bestellung.');
-    const total=integer(b.total_amount_cents,'Bestellbetrag');
-    const postage=integer(b.postage_cents??0,'Versandbetrag');
+    const orderDate=clean(b.order_date,10);if(orderDate&&!/^\d{4}-\d{2}-\d{2}$/.test(orderDate))fail(400,'Bestelldatum ungültig.');
     const channel=clean(b.sales_channel,40)||'manual';
     if(!['manual','online','sales_point','other'].includes(channel))fail(400,'Ungültiger Verkaufskanal.');
     const external=clean(b.external_order_id,80)||null;
@@ -547,10 +541,11 @@ async function handleApi(request,env,actor){
     await db.batch([
       db.prepare('INSERT INTO customers(id,full_name,address_line1,address_line2,postal_code,city,country,email,phone,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
         .bind(cid,full_name,address,clean(b.address_line2,180)||null,postal,city,'DE',email||null,phone||null,stamp,stamp),
-      db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,total_amount_cents,postage_cents,paid_amount_cents,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,0,'unpaid','not_ready',?,?,?,?,?,?)`)
-        .bind(id,cid,external,channel,total,postage,qK,qM,qS,note||null,stamp,stamp),
-      audit(db,actor,'order.created','order',id,{external,qK,qM,qS,total})
+      db.prepare(`INSERT INTO orders(id,customer_id,external_order_id,sales_channel,payment_status,shipping_status,qty_kombi,qty_matrosen,qty_seemann,internal_note,created_at,updated_at)
+        VALUES(?,?,?,?,'unpaid','not_ready',?,?,?,?,?,?)`)
+        .bind(id,cid,external,channel,qK,qM,qS,note||null,stamp,stamp),
+      db.prepare("INSERT INTO order_review(order_id,state,order_date) VALUES (?,'unchecked',?)").bind(id,orderDate||null),
+      audit(db,actor,'order.created','order',id,{external,qK,qM,qS})
     ]);
     return json(await getOrder(db,id,role),201);
   }
@@ -576,16 +571,17 @@ async function handleApi(request,env,actor){
       const allocated=await db.prepare(`SELECT p.name FROM sales_point_tickets s
         JOIN sales_points p ON p.id=s.point_id WHERE s.ticket_code=? AND s.status='at_point'`).bind(code).first();
       if(allocated)fail(409,'Ticket befindet sich bei Verkaufsstelle '+allocated.name+'.');
-      const order=await db.prepare('SELECT shipping_status FROM orders WHERE id=?').bind(id).first();
+      const order=await db.prepare('SELECT shipping_status,payment_status,sales_channel FROM orders WHERE id=?').bind(id).first();
       if(!order)fail(404,'Bestellung nicht gefunden.');
+      if(order.payment_status!=='paid'&&order.sales_channel!=='internal_test')fail(409,'Zahlung zuerst bestätigen.');
       if(order.shipping_status==='sent'||order.shipping_status==='handed_over'||order.shipping_status==='cancelled')fail(409,'Bestellung nicht mehr bearbeitbar.');
       const stamp=new Date().toISOString();
       const update=await db.batch([
         db.prepare(`UPDATE tickets SET order_id=?,status='assigned',assigned_at=?,updated_at=?
           WHERE code=? AND status='available' AND order_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM sales_point_tickets sp WHERE sp.ticket_code=tickets.code AND sp.status='at_point')
-          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))
-          AND (SELECT COUNT(*) FROM tickets WHERE order_id=? AND ticket_type=tickets.ticket_type)
+          AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready') AND (payment_status='paid' OR sales_channel='internal_test'))
+          AND (SELECT COUNT(*) FROM tickets AS assigned WHERE assigned.order_id=? AND assigned.ticket_type=tickets.ticket_type)
             < (SELECT CASE tickets.ticket_type WHEN 'Kombi' THEN qty_kombi WHEN 'Matrosen' THEN qty_matrosen ELSE qty_seemann END FROM orders WHERE id=?)`)
           .bind(id,stamp,stamp,code,id,id,id),
         db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
@@ -628,36 +624,36 @@ async function handleApi(request,env,actor){
       return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='payment'){
-      const b=await readBody(request),direction=clean(b.direction,20),method=clean(b.method,20),reference=clean(b.reference,100);
-      if(!['received','refunded'].includes(direction)||!['bank','cash','card','other'].includes(method))fail(400,'Zahlungsart ungültig.');
-      const amount=positive(b.amount_cents,'Betrag');
-      const payid=clean(b.idempotency_key,80);
-      if(!/^[0-9a-f-]{36}$/.test(payid))fail(400,'Buchungs-ID fehlt.');
-      const order=await db.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
-      if(!order)fail(404,'Bestellung nicht gefunden.');
-      if(order.sales_channel==='internal_test')fail(409,'Testbestellung: keine echten Zahlungen buchen.');
-      const previously=await db.prepare('SELECT * FROM payments WHERE id=?').bind(payid).first();
-      if(previously){
-        if(previously.order_id!==id||previously.direction!==direction||previously.method!==method||previously.amount_cents!==amount||
-          (previously.reference||'')!==reference)fail(409,'Buchungs-ID wird bereits für eine andere Zahlung verwendet.');
-        return json(await getOrder(db,id,role));
-      }
-      if(order.shipping_status==='cancelled')fail(409,'Stornierte Bestellung.');
-      if(direction==='refunded'&&amount>order.paid_amount_cents)fail(409,'Erstattung darf die vorhandenen Zahlungseingänge nicht überschreiten.');
-      await db.batch([
-        db.prepare(`INSERT OR IGNORE INTO payments(id,order_id,direction,method,amount_cents,reference,created_by)
-          VALUES(?,?,?,?,?,?,?)`).bind(payid,id,direction,method,amount,reference||null,actor),
-        db.prepare(`UPDATE orders SET paid_amount_cents=(SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?),
-          payment_status=(CASE
-            WHEN (SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?)=0
-              THEN (CASE WHEN EXISTS(SELECT 1 FROM payments WHERE order_id=? AND direction='refunded') THEN 'refunded' ELSE 'unpaid' END)
-            WHEN (SELECT COALESCE(SUM(CASE WHEN direction='received' THEN amount_cents ELSE -amount_cents END),0) FROM payments WHERE order_id=?)>=total_amount_cents THEN 'paid'
-            ELSE 'partial' END),updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-          .bind(id,id,id,id,id),
+      const b=await readBody(request),state=clean(b.state,30);
+      if(!Object.prototype.hasOwnProperty.call(reviewMap,state))fail(400,'Ungültiger Zahlungsstatus.');
+      const {order}=await getOrder(db,id,role);
+      if(order.sales_channel==='internal_test')fail(409,'Testbestellung: keine Zahlungsbestätigung.');
+      if(b.expected_updated_at!==order.updated_at||b.expected_state!==order.review_state)fail(409,'Bestellung inzwischen geändert. Bitte neu laden.');
+      const note=b.internal_note===undefined?order.internal_note:clean(b.internal_note,500);
+      const cancel=b.cancel===true,edit=b.quantities!==undefined,shipping=order.shipping_status,open=['not_ready','ready'].includes(shipping);
+      if((cancel||edit)&&!open)fail(409,'Mengen/Stornierung nur vor Versand möglich.');
+      if(shipping==='cancelled')fail(409,'Bestellung bereits storniert.');
+      if(edit&&(!b.quantities||typeof b.quantities!=='object'))fail(400,'Ticketmengen ungültig.');
+      const qty=edit?['qty_kombi','qty_matrosen','qty_seemann'].map(k=>integer(b.quantities[k],k,100)):[order.qty_kombi,order.qty_matrosen,order.qty_seemann];
+      if(qty.reduce((a,b)=>a+b,0)<1||qty.reduce((a,b)=>a+b,0)>100)fail(400,'Ticketmenge ungültig.');
+      await ensureEnvelopeSchema(db);
+      const stamp=new Date().toISOString().replace('Z','')+String(crypto.getRandomValues(new Uint32Array(1))[0]).padStart(10,'0')+'Z',marker=makeId(),nextShip=cancel?'cancelled':open&&(state!=='paid'||edit)?'not_ready':shipping;
+      const result=await db.batch([
+        db.prepare(`UPDATE orders SET payment_status=?,shipping_status=?,qty_kombi=?,qty_matrosen=?,qty_seemann=?,internal_note=?,updated_at=?
+          WHERE id=? AND updated_at=? AND shipping_status=?
+          AND (?=0 OR NOT EXISTS(SELECT 1 FROM tickets WHERE order_id=orders.id))
+          AND (?=0 OR NOT EXISTS(SELECT 1 FROM envelope_progress WHERE order_id=orders.id AND packed_at IS NOT NULL))
+          AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Kombi')<=?
+          AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Matrosen')<=?
+          AND (SELECT COUNT(*) FROM tickets WHERE order_id=orders.id AND ticket_type='Seemann')<=?`)
+          .bind(reviewMap[state],nextShip,...qty,note||null,stamp,id,order.updated_at,shipping,cancel?1:0,open&&(cancel||edit||state!=='paid')?1:0,...qty),
+        db.prepare(`INSERT INTO order_review(order_id,state,updated_at) SELECT id,?,? FROM orders WHERE id=? AND updated_at=?
+          ON CONFLICT(order_id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at`).bind(state,marker,id,stamp),
         db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
-          SELECT ?,?,'payment.recorded','payment',?,? WHERE EXISTS (SELECT 1 FROM payments WHERE id=? AND order_id=?)`)
-          .bind(makeId(),actor,payid,JSON.stringify({order_id:id,direction,amount,method}),payid,id)
+          SELECT ?,?,'order.review','order',?,? WHERE EXISTS(SELECT 1 FROM order_review WHERE order_id=? AND updated_at=?)`)
+          .bind(makeId(),actor,id,JSON.stringify({before:{state:order.review_state,shipping,qty:[order.qty_kombi,order.qty_matrosen,order.qty_seemann]},after:{state,shipping:nextShip,qty},note_changed:(order.internal_note||'')!==note}),id,marker)
       ]);
+      if(result[0].meta?.changes!==1||result[1].meta?.changes!==1)fail(409,'Nicht geändert: Verpackung zuerst lösen, bei Stornierung Tickets freigeben oder Bestellung neu laden.');
       return json(await getOrder(db,id,role));
     }
     if(method==='POST'&&op==='dispatch'){

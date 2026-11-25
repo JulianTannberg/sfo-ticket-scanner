@@ -1,7 +1,7 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id);
 const names=[
- ['external_order_id','Bestellnummer *',['bestellnummer','bestellnr','orderid','ordernumber','nummer','nr']],
+ ['external_order_id','Bestellnummer (optional)',['bestellnummer','bestellnr','orderid','ordernumber','nummer','nr']],
  ['full_name','Kunden-/Empfängername *',['kundenname','kunde','empfaenger','empfanger','fullname','name','liefername','vorundnachname']],
  ['address_line1','Straße und Hausnummer *',['strasseundhausnummer','strasse','straße','street','address1','anschrift','lieferstrasse']],
  ['postal_code','Postleitzahl *',['postleitzahl','plz','postcode','zip','zipcode']],
@@ -9,17 +9,16 @@ const names=[
  ['qty_kombi','Anzahl Kombi',['qtykombi','anzahlkombi','kombi','kombiticket','kombi tickets','kombitickets']],
  ['qty_matrosen','Anzahl Matrosen',['qtymatrosen','anzahlmatrosen','matrosen','matrosentickets']],
  ['qty_seemann','Anzahl Seemann',['qtyseemann','anzahlseemann','seemann','seemanntickets']],
- ['total_eur','Bestellbetrag € *',['gesamtbetrag','gesamtpreis','gesamtsumme','bestellwert','total','ordertotal','brutto']],
- ['postage_eur','Versand / Porto €',['versandkosten','porto','shippingcost','versand']],
- ['paid_eur','Bereits bezahlt €',['bereitsbezahlt','gezahlt','paidamount','zahlungsbetrag','zahlungseingang']],
- ['payment_state','Zahlungsstatus',['zahlungsstatus','bestellstatus','paymentstatus','status']],
+ ['source','Importquelle (wenn keine Bestellnummer)',['importquelle']],
+ ['source_row','Excelzeile (wenn keine Bestellnummer)',['excelzeile']],
+ ['order_date','Bestelldatum (JJJJ-MM-TT)',['bestelldatum','orderdate']],
+ ['internal_note','Prüfhinweis / interne Notiz',['prufhinweis','pruefhinweis','internenotiz','notiz']],
  ['address_line2','Adresszusatz',['adresszusatz','address2','zusatz','wohnung']],
  ['email','E-Mail',['email','emailadresse','mail']],
  ['phone','Telefon',['telefon','phone','telefonnummer','mobil']]
 ];
-const required=new Set(['external_order_id','full_name','address_line1','postal_code','city','total_eur']);
+const required=new Set(['full_name','address_line1','postal_code','city']);
 const headersNorm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
-const eur=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
 let headers=[],rows=[],map={},preview=[],sample=false,dirty=true;
 function notice(msg,error=false){$('importStatus').textContent=msg;$('importStatus').className='alert '+(error?'error':'success');}
 function delimiterOf(line){
@@ -82,7 +81,7 @@ function mappingUi(){
     wrap.append(select);root.append(wrap);
     select.addEventListener('change',()=>{dirty=true;$('previewSection').hidden=true;});
   }
-  $('mappingHint').textContent=headers.length+' Spalten und '+rows.length+' Datenzeilen erkannt. Zuordnungen kontrollieren, insbesondere Ticketanzahlen und Preise.';
+  $('mappingHint').textContent=headers.length+' Spalten und '+rows.length+' Datenzeilen erkannt. Zuordnungen kontrollieren, insbesondere Ticketanzahlen und Anschriften.';
   $('mappingSection').hidden=false;
 }
 function intVal(value,field){
@@ -91,20 +90,6 @@ function intVal(value,field){
   if(!/^\d{1,3}(\.\d{3})*$|^\d+$/.test(s))throw Error(field+': Anzahl „'+s+'“ ist keine ganze Zahl.');
   const n=Number(s.replace(/\./g,''));
   if(!Number.isSafeInteger(n)||n<0||n>100)throw Error(field+': ungültige Ticketanzahl '+s);
-  return n;
-}
-function cents(value,field,emptyOkay=false){
-  let s=String(value||'').trim().replace(/€|\s/g,'');
-  if(!s){if(emptyOkay)return 0;throw Error(field+': Betrag fehlt.');}
-  if(s.includes(',')&&s.includes('.')){
-    if(s.lastIndexOf(',')>s.lastIndexOf('.'))s=s.replace(/\./g,'').replace(',','.');
-    else s=s.replace(/,/g,'');
-  }else if(s.includes(','))s=s.replace(',','.');
-  else if(/^\d{1,3}(\.\d{3})+$/.test(s))s=s.replace(/\./g,'');
-  if(!/^\d{1,8}(\.\d{1,2})?$/.test(s))throw Error(field+': Betrag „'+value+'“ unklar.');
-  const [whole,decimal='']=s.split('.');
-  const n=Number(whole)*100+Number(decimal.padEnd(2,'0'));
-  if(!Number.isSafeInteger(n)||n>100000000)throw Error(field+': Betrag zu hoch.');
   return n;
 }
 function readMap(){
@@ -124,49 +109,38 @@ function previewData(){
   readMap();
   const outputs=[],seen=new Set(),issues=[];
   for(let i=0;i<rows.length;i++){
-    const row=rows[i],n=i+2,ext=get(row,'external_order_id'),name=get(row,'full_name'),
+    const row=rows[i],n=i+2,source=get(row,'source'),line=get(row,'source_row'),external=get(row,'external_order_id'),ext=external||(source&&/^[1-9]\d*$/.test(line)?'IMPORT:'+source+':'+line:''),name=get(row,'full_name'),
     street=get(row,'address_line1'),postal=get(row,'postal_code'),city=get(row,'city');
-    if(!ext||!name||!street||!postal||!city)throw Error('Zeile '+n+': Bestellnummer oder Anschrift unvollständig.');
+    if(!ext||ext.length>80||!name||!street||!postal||!city)throw Error('Zeile '+n+': Bestellnummer oder Anschrift unvollständig.');
     if(seen.has(ext))throw Error('Bestellnummer '+ext+' ist mehrfach enthalten. Vermutlich einzelne Produktpositionen – bitte erst Export prüfen, nicht importieren.');
     seen.add(ext);
     const count={qty_kombi:intVal(get(row,'qty_kombi'),'Kombi'),qty_matrosen:intVal(get(row,'qty_matrosen'),'Matrosen'),qty_seemann:intVal(get(row,'qty_seemann'),'Seemann')};
     const total=count.qty_kombi+count.qty_matrosen+count.qty_seemann;
     if(total<1||total>100)throw Error('Zeile '+n+': Ticketanzahl 0 oder über 100.');
-    const amount=cents(get(row,'total_eur'),'Gesamtpreis Zeile '+n),
-      postage=cents(get(row,'postage_eur'),'Porto Zeile '+n,true);
-    if(postage>amount)throw Error('Zeile '+n+': Porto größer als Gesamtbetrag.');
-    let paid=map.paid_eur>=0?cents(get(row,'paid_eur'),'Bezahlt Zeile '+n,true):0;
-    if(map.paid_eur<0&&map.payment_state>=0&&$('trustPaid').checked){
-      const state=headersNorm(get(row,'payment_state'));
-      if(['bezahlt','zahlungakzeptiert','paid','complete','completed','fullypaid'].includes(state))paid=amount;
-      else if(state&&!['eingegangen','unbezahlt','offen','pending','storniert','cancelled','refunded'].includes(state))issues.push('Unbekannter Zahlungsstatus in Zeile '+n+': '+get(row,'payment_state'));
-    }
-    if(paid>amount)throw Error('Zeile '+n+': Zahlung größer als Bestellbetrag.');
     const value={external_order_id:ext,full_name:name,address_line1:street,address_line2:get(row,'address_line2'),
-      postal_code:postal,city,email:get(row,'email'),phone:get(row,'phone'),
-      ...count,total_amount_cents:amount,postage_cents:postage,paid_amount_cents:paid};
+      postal_code:postal,city,email:get(row,'email'),phone:get(row,'phone'),internal_note:get(row,'internal_note'),order_date:get(row,'order_date'),...count};
     if(value.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.email))
       throw Error('Zeile '+n+': E-Mail nicht gültig.');
     outputs.push(value);
   }
   preview=outputs;dirty=false;
   $('previewRows').replaceChildren();
-  for(const entry of outputs.slice(0,20)){
+  for(const entry of outputs){
     const tr=document.createElement('tr');
     for(const val of [
       entry.external_order_id,
-      entry.full_name,
+      [entry.full_name,entry.address_line1,entry.address_line2,entry.postal_code+' '+entry.city].filter(Boolean).join(' · '),
       ['K '+entry.qty_kombi,'M '+entry.qty_matrosen,'S '+entry.qty_seemann].join(' · '),
-      eur(entry.total_amount_cents),eur(entry.paid_amount_cents)
+      entry.internal_note||'–','Ungeprüft'
     ]){const td=document.createElement('td');td.textContent=val;tr.append(td);}
     $('previewRows').append(tr);
   }
-  $('previewInfo').textContent=outputs.length+' Bestellungen geprüft. Angezeigt werden maximal 20. Alle Zeilen werden erst nach deiner Bestätigung übertragen.';
+  $('previewInfo').textContent=outputs.length+' Bestellungen geprüft. Alle Positionen werden angezeigt. Alle Zeilen werden erst nach deiner Bestätigung übertragen.';
   $('previewWarning').textContent=sample?'Nur erfundene Musterdaten! Muster dürfen nicht in die echte Datenbank importiert werden.':issues.slice(0,8).join(' · ');
   $('confirmImport').disabled=sample||outputs.length===0;
   $('previewSection').hidden=false;
   $('previewSection').scrollIntoView({behavior:'smooth',block:'start'});
-  notice(outputs.length+' Bestellungen können geprüft werden. Preise und Mengen vor dem Import vergleichen.');
+  const totals=['qty_kombi','qty_matrosen','qty_seemann'].map(k=>outputs.reduce((n,o)=>n+o[k],0));notice(outputs.length+' Bestellpositionen · '+totals[0]+' Kombi · '+totals[1]+' Matrosen · '+totals[2]+' Seemann. Anschriften und Mengen kontrollieren.');
 }
 function parseSource(){
   const text=$('sourceText').value.trim();
@@ -178,7 +152,7 @@ function parseSource(){
 }
 async function doImport(){
   if(sample||dirty||!preview.length)return;
-  if(!confirm('Wirklich '+preview.length+' Bestellungen mit Lieferadressen, Ticketanzahlen und Preisen in die geschützte Datenbank übernehmen?'))return;
+  if(!confirm('Wirklich '+preview.length+' Bestellungen mit Lieferadressen, Ticketanzahlen in die geschützte Datenbank übernehmen?'))return;
   const btn=$('confirmImport');btn.disabled=true;
   let imported=0,skipped=0;
   try{
@@ -207,9 +181,9 @@ $('sourceText').addEventListener('input',()=>{sample=false;dirty=true;$('mapping
 $('parseSource').addEventListener('click',()=>{try{parseSource();}catch(e){notice(e.message,true);}});
 $('preparePreview').addEventListener('click',()=>{try{previewData();}catch(e){$('previewSection').hidden=true;notice(e.message,true);}});
 $('confirmImport').addEventListener('click',doImport);
-$('trustPaid').addEventListener('change',()=>{dirty=true;$('previewSection').hidden=true;});
+
 $('demoCsv').addEventListener('click',()=>{
-  $('sourceText').value='Bestellnummer;Name;Straße;PLZ;Ort;Kombi;Matrosen;Seemann;Gesamtbetrag;Porto;Bereits bezahlt\nMUSTER-001;Max Mustermann;Musterstraße 12;12345;Musterstadt;1;0;1;95,00;5,00;95,00\nMUSTER-002;Erika Beispiel;Probegasse 4;23456;Beispielort;0;2;0;35,00;0,00;0,00';
+  $('sourceText').value='Bestellnummer;Name;Straße;PLZ;Ort;Kombi;Matrosen;Seemann\nMUSTER-001;Max Mustermann;Musterstraße 12;12345;Musterstadt;1;0;1\nMUSTER-002;Erika Beispiel;Probegasse 4;23456;Beispielort;0;2;0';
   sample=true;
   try{parseSource();notice('Muster geladen. Diese Daten werden NICHT importiert.');}
   catch(e){notice(e.message,true);}
