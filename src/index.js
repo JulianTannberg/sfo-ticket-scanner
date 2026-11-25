@@ -145,6 +145,31 @@ async function ensureEnvelopeSchema(db){
   }
   return envelopeSchemaInit;
 }
+// Physical ticket custody for off-site sales points; no admission or sale is implied.
+let salesPointSchemaReady=null;
+async function ensureSalesPointSchema(db){
+  if(!salesPointSchemaReady){
+    salesPointSchemaReady=(async()=>{
+      await db.prepare(`CREATE TABLE IF NOT EXISTS sales_points (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`).run();
+      await db.prepare(`CREATE TABLE IF NOT EXISTS sales_point_tickets (
+        ticket_code TEXT PRIMARY KEY REFERENCES tickets(code) ON DELETE RESTRICT,
+        point_id TEXT NOT NULL REFERENCES sales_points(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL CHECK (status IN ('at_point','returned')),
+        issued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        returned_at TEXT,
+        updated_by TEXT NOT NULL,
+        CHECK (status <> 'at_point' OR returned_at IS NULL)
+      )`).run();
+      await db.prepare('CREATE INDEX IF NOT EXISTS idx_sales_point_tickets_point ON sales_point_tickets(point_id,status)').run();
+    })();
+    salesPointSchemaReady.catch(()=>{salesPointSchemaReady=null;});
+  }
+  return salesPointSchemaReady;
+}
 function audit(db,actor,action,entity,id,metadata={}){
   return db.prepare('INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json) VALUES (?,?,?,?,?,?)')
     .bind(makeId(),actor,action,entity,id,JSON.stringify(metadata).slice(0,2000));
@@ -153,9 +178,11 @@ function audit(db,actor,action,entity,id,metadata={}){
 // Explicitly allow only operational routes for the second organizer.
 // This is server-side authorization: hidden buttons or direct API calls cannot bypass it.
 function dispatchAllowed(method,path){
-  if(method==='GET'&&['/api/me','/api/overview','/api/orders','/api/envelopes'].includes(path))return true;
+  if(method==='GET'&&['/api/me','/api/overview','/api/orders','/api/envelopes','/api/sales-points'].includes(path))return true;
+  if(method==='GET'&&/^\/api\/sales-points\/[a-f0-9-]{36}\/tickets$/.test(path))return true;
   if(method==='POST'&&path==='/api/tickets/check')return true;
-  if(method==='POST'&&['/api/orders','/api/orders/import'].includes(path))return true;
+  if(method==='POST'&&['/api/orders','/api/orders/import','/api/sales-points'].includes(path))return true;
+  if(method==='POST'&&/^\/api\/sales-points\/[a-f0-9-]{36}\/(issue|return)$/.test(path))return true;
   if(method==='POST'&&path==='/api/envelopes/status')return true;
   if(/^\/api\/orders\/[a-f0-9-]{36}$/.test(path)&&method==='GET')return true;
   if(/^\/api\/orders\/[a-f0-9-]{36}\/(assign|unassign|customer|payment|dispatch)$/.test(path)&&method==='POST')return true;
@@ -175,15 +202,96 @@ async function handleApi(request,env,actor){
     const input=await request.clone().json().catch(()=>null);
     if(input?.action==='demo_printed')fail(403,'Testfunktionen sind ausschließlich für die Administration.');
   }
+  if(method==='GET'&&path==='/api/sales-points'){
+    await ensureSalesPointSchema(db);
+    const [points,totals]=await Promise.all([
+      db.prepare(`SELECT p.id,p.name,
+        COUNT(CASE WHEN s.status='at_point' THEN 1 END) AS ticket_count,
+        COUNT(CASE WHEN s.status='at_point' AND t.ticket_type='Kombi' THEN 1 END) AS kombi_count,
+        COUNT(CASE WHEN s.status='at_point' AND t.ticket_type='Matrosen' THEN 1 END) AS matrosen_count,
+        COUNT(CASE WHEN s.status='at_point' AND t.ticket_type='Seemann' THEN 1 END) AS seemann_count
+        FROM sales_points p LEFT JOIN sales_point_tickets s ON s.point_id=p.id
+        LEFT JOIN tickets t ON t.code=s.ticket_code
+        GROUP BY p.id,p.name ORDER BY p.name COLLATE NOCASE`).all(),
+      db.prepare(`SELECT COUNT(*) AS free FROM tickets t WHERE t.status='available'
+        AND t.order_id IS NULL AND t.admitted_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')`).first()
+    ]);
+    return json({points:points.results||[],free:totals?.free||0});
+  }
+  if(method==='POST'&&path==='/api/sales-points'){
+    await ensureSalesPointSchema(db);
+    const b=await readBody(request),name=clean(b.name,90);
+    if(name.length<2||/[<>\\]/.test(name))fail(400,'Name der Verkaufsstelle ungültig.');
+    const id=makeId();
+    const r=await db.prepare('INSERT OR IGNORE INTO sales_points(id,name) VALUES (?,?)').bind(id,name).run();
+    const point=await db.prepare('SELECT id,name FROM sales_points WHERE name=? COLLATE NOCASE').bind(name).first();
+    if(r.meta?.changes)await audit(db,actor,'sales_point.created','sales_point',id,{name}).run();
+    return json({point,created:Boolean(r.meta?.changes)});
+  }
+  const pointPath=path.match(/^\/api\/sales-points\/([a-f0-9-]{36})\/(tickets|issue|return)$/);
+  if(pointPath){
+    await ensureSalesPointSchema(db);
+    const pointId=pointPath[1],action=pointPath[2];
+    const point=await db.prepare('SELECT id,name FROM sales_points WHERE id=?').bind(pointId).first();
+    if(!point)fail(404,'Verkaufsstelle nicht gefunden.');
+    if(method==='GET'&&action==='tickets'){
+      const result=await db.prepare(`SELECT s.ticket_code AS code,t.ticket_type,s.issued_at
+        FROM sales_point_tickets s JOIN tickets t ON t.code=s.ticket_code
+        WHERE s.point_id=? AND s.status='at_point' ORDER BY s.issued_at DESC,s.ticket_code DESC
+        LIMIT 1000`).bind(pointId).all();
+      return json({point,tickets:result.results||[]});
+    }
+    if(method==='POST'&&(action==='issue'||action==='return')){
+      const b=await readBody(request),code=parseCode(b.code);
+      if(!code)fail(400,'Kein gültiger Sturmflut-Ticketcode.');
+      const ticket=await db.prepare('SELECT code,ticket_type,status,order_id,admitted_at FROM tickets WHERE code=?').bind(code).first();
+      if(!ticket)fail(404,'Dieser Ticketcode ist nicht importiert.');
+      let r;
+      if(action==='issue'){
+        if(ticket.status!=='available'||ticket.order_id||ticket.admitted_at)
+          fail(409,'Ticket nicht frei: bereits zugeordnet, gesperrt oder entwertet.');
+        r=await db.prepare(`INSERT INTO sales_point_tickets(ticket_code,point_id,status,issued_at,returned_at,updated_by)
+          SELECT t.code,?,'at_point',CURRENT_TIMESTAMP,NULL,? FROM tickets t
+          WHERE t.code=? AND t.status='available' AND t.order_id IS NULL AND t.admitted_at IS NULL
+          AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')
+          ON CONFLICT(ticket_code) DO UPDATE SET
+            point_id=excluded.point_id,status='at_point',issued_at=excluded.issued_at,
+            returned_at=NULL,updated_by=excluded.updated_by
+          WHERE sales_point_tickets.status='returned'
+          AND EXISTS(SELECT 1 FROM tickets t WHERE t.code=excluded.ticket_code
+            AND t.status='available' AND t.order_id IS NULL AND t.admitted_at IS NULL)`)
+          .bind(pointId,actor,code).run();
+        if((r.meta?.changes||0)!==1){
+          const existing=await db.prepare(`SELECT p.name FROM sales_point_tickets s JOIN sales_points p
+            ON p.id=s.point_id WHERE s.ticket_code=? AND s.status='at_point'`).bind(code).first();
+          fail(409,existing?'Ticket ist bereits bei '+existing.name+'.':'Ticket kann nicht ausgegeben werden.');
+        }
+        await audit(db,actor,'sales_point.ticket_issued','ticket',code,{point_id:pointId,ticket_type:ticket.ticket_type}).run();
+      }else{
+        r=await db.prepare(`UPDATE sales_point_tickets SET status='returned',returned_at=CURRENT_TIMESTAMP,updated_by=?
+          WHERE ticket_code=? AND point_id=? AND status='at_point'
+          AND EXISTS(SELECT 1 FROM tickets t WHERE t.code=sales_point_tickets.ticket_code
+            AND t.order_id IS NULL AND t.status='available' AND t.admitted_at IS NULL)`)
+          .bind(actor,code,pointId).run();
+        if((r.meta?.changes||0)!==1)fail(409,'Dieses Ticket ist dieser Verkaufsstelle nicht als Bestand zugeordnet.');
+        await audit(db,actor,'sales_point.ticket_returned','ticket',code,{point_id:pointId,ticket_type:ticket.ticket_type}).run();
+      }
+      return json({ok:true,action,ticket_type:ticket.ticket_type,point_name:point.name});
+    }
+  }
   if(method==='POST'&&path==='/api/tickets/check'){
     // Read-only QR test. Never assign, redeem, or log a ticket as scanned.
     const b=await readBody(request);
     const code=parseCode(b.code);
     if(!code)return json({recognized:false,reason:'format'});
-    const ticket=await db.prepare('SELECT ticket_type,status,order_id FROM tickets WHERE code=?').bind(code).first();
+    await ensureSalesPointSchema(db);
+    const ticket=await db.prepare(`SELECT t.ticket_type,t.status,t.order_id,p.name AS sales_point_name
+      FROM tickets t LEFT JOIN sales_point_tickets s ON s.ticket_code=t.code AND s.status='at_point'
+      LEFT JOIN sales_points p ON p.id=s.point_id WHERE t.code=?`).bind(code).first();
     if(!ticket)return json({recognized:false,reason:'unknown'});
     return json({recognized:true,ticket_type:ticket.ticket_type,status:ticket.status,
-      assigned:Boolean(ticket.order_id)});
+      assigned:Boolean(ticket.order_id),sales_point:ticket.sales_point_name||null});
   }
   if(method==='GET'&&path==='/api/overview'){
     const [tickets,orders]=await Promise.all([
@@ -455,6 +563,7 @@ async function handleApi(request,env,actor){
     }
     if(method==='GET'&&!op)return json(await getOrder(db,id,role));
     if(method==='POST'&&op==='assign'){
+      await ensureSalesPointSchema(db);
       const b=await readBody(request),code=parseCode(b.code);
       if(!code)fail(400,'QR-Code hat kein gültiges Ticketformat.');
       const existing=await db.prepare('SELECT code,ticket_type,status,order_id FROM tickets WHERE code=?').bind(code).first();
@@ -464,6 +573,9 @@ async function handleApi(request,env,actor){
         fail(409,'Dieses Ticket ist schon einer anderen Bestellung zugeordnet.');
       }
       if(existing.status!=='available')fail(409,'Ticket ist gesperrt oder nicht verfügbar.');
+      const allocated=await db.prepare(`SELECT p.name FROM sales_point_tickets s
+        JOIN sales_points p ON p.id=s.point_id WHERE s.ticket_code=? AND s.status='at_point'`).bind(code).first();
+      if(allocated)fail(409,'Ticket befindet sich bei Verkaufsstelle '+allocated.name+'.');
       const order=await db.prepare('SELECT shipping_status FROM orders WHERE id=?').bind(id).first();
       if(!order)fail(404,'Bestellung nicht gefunden.');
       if(order.shipping_status==='sent'||order.shipping_status==='handed_over'||order.shipping_status==='cancelled')fail(409,'Bestellung nicht mehr bearbeitbar.');
@@ -471,6 +583,7 @@ async function handleApi(request,env,actor){
       const update=await db.batch([
         db.prepare(`UPDATE tickets SET order_id=?,status='assigned',assigned_at=?,updated_at=?
           WHERE code=? AND status='available' AND order_id IS NULL
+          AND NOT EXISTS(SELECT 1 FROM sales_point_tickets sp WHERE sp.ticket_code=tickets.code AND sp.status='at_point')
           AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready'))
           AND (SELECT COUNT(*) FROM tickets WHERE order_id=? AND ticket_type=tickets.ticket_type)
             < (SELECT CASE tickets.ticket_type WHEN 'Kombi' THEN qty_kombi WHEN 'Matrosen' THEN qty_matrosen ELSE qty_seemann END FROM orders WHERE id=?)`)
