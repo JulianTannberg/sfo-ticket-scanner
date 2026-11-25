@@ -16,5 +16,14 @@
     }
   ],
   "main": "src/index.js",
-  "keep_vars": true
+  "keep_vars": true,
+  "previews": {
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "sturmknoten-2027-test",
+        "database_id": "863ae253-c645-4a09-be6b-3a7cd2d6637d"
+      }
+    ]
+  }
 }
