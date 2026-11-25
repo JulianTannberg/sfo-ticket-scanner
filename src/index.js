@@ -565,7 +565,7 @@ async function handleApi(request,env,actor){
           WHERE code=? AND status='available' AND order_id IS NULL
           AND NOT EXISTS(SELECT 1 FROM sales_point_tickets sp WHERE sp.ticket_code=tickets.code AND sp.status='at_point')
           AND EXISTS(SELECT 1 FROM orders WHERE id=? AND shipping_status IN ('not_ready','ready') AND (payment_status='paid' OR sales_channel='internal_test'))
-          AND (SELECT COUNT(*) FROM tickets WHERE order_id=? AND ticket_type=tickets.ticket_type)
+          AND (SELECT COUNT(*) FROM tickets AS assigned WHERE assigned.order_id=? AND assigned.ticket_type=tickets.ticket_type)
             < (SELECT CASE tickets.ticket_type WHEN 'Kombi' THEN qty_kombi WHEN 'Matrosen' THEN qty_matrosen ELSE qty_seemann END FROM orders WHERE id=?)`)
           .bind(id,stamp,stamp,code,id,id,id),
         db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)

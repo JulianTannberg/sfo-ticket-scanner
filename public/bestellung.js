@@ -123,6 +123,7 @@ async function assign(raw){
     record=await api('/api/orders/'+id+'/assign','POST',{code:raw});
     const pack=await api('/api/envelopes');envelope=(pack.envelopes||[]).find(e=>e.id===id)||envelope;
     render();
+    $('manualCode').value='';
     scanMessage('✓ Ticket erkannt und zugeordnet.','ok');
     $('pageStatus').hidden=true;
   }catch(e){scanMessage('Nicht zugeordnet: '+e.message,'error');}
