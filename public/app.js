@@ -1,8 +1,6 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
-const euro=s=>{s=String(s||'').trim();if(!/^(0|[1-9]\d{0,6})([,.]\d{1,2})?$/.test(s))throw Error('Euro-Betrag ungültig: '+s);const [a,b='']=s.replace(',','.').split('.');return Number(a)*100+Number(b.padEnd(2,'0'));};
 const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
 let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
 let userRole='admin';

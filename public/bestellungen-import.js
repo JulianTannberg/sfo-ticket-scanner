@@ -19,7 +19,6 @@ const names=[
 ];
 const required=new Set(['full_name','address_line1','postal_code','city']);
 const headersNorm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
-const eur=n=>(Number(n||0)/100).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
 let headers=[],rows=[],map={},preview=[],sample=false,dirty=true;
 function notice(msg,error=false){$('importStatus').textContent=msg;$('importStatus').className='alert '+(error?'error':'success');}
 function delimiterOf(line){
@@ -93,20 +92,6 @@ function intVal(value,field){
   if(!Number.isSafeInteger(n)||n<0||n>100)throw Error(field+': ungültige Ticketanzahl '+s);
   return n;
 }
-function cents(value,field,emptyOkay=false){
-  let s=String(value||'').trim().replace(/€|\s/g,'');
-  if(!s){if(emptyOkay)return 0;throw Error(field+': Betrag fehlt.');}
-  if(s.includes(',')&&s.includes('.')){
-    if(s.lastIndexOf(',')>s.lastIndexOf('.'))s=s.replace(/\./g,'').replace(',','.');
-    else s=s.replace(/,/g,'');
-  }else if(s.includes(','))s=s.replace(',','.');
-  else if(/^\d{1,3}(\.\d{3})+$/.test(s))s=s.replace(/\./g,'');
-  if(!/^\d{1,8}(\.\d{1,2})?$/.test(s))throw Error(field+': Betrag „'+value+'“ unklar.');
-  const [whole,decimal='']=s.split('.');
-  const n=Number(whole)*100+Number(decimal.padEnd(2,'0'));
-  if(!Number.isSafeInteger(n)||n>100000000)throw Error(field+': Betrag zu hoch.');
-  return n;
-}
 function readMap(){
   map={};document.querySelectorAll('#mappingFields select').forEach(s=>{map[s.dataset.key]=Number(s.value);});
   for(const key of required)if(map[key]<0)throw Error('Pflichtspalte fehlt: '+names.find(item=>item[0]===key)[1]);
@@ -144,7 +129,7 @@ function previewData(){
     const tr=document.createElement('tr');
     for(const val of [
       entry.external_order_id,
-      entry.full_name,
+      [entry.full_name,entry.address_line1,entry.address_line2,entry.postal_code+' '+entry.city].filter(Boolean).join(' · '),
       ['K '+entry.qty_kombi,'M '+entry.qty_matrosen,'S '+entry.qty_seemann].join(' · '),
       entry.internal_note||'–','Ungeprüft'
     ]){const td=document.createElement('td');td.textContent=val;tr.append(td);}
@@ -155,7 +140,7 @@ function previewData(){
   $('confirmImport').disabled=sample||outputs.length===0;
   $('previewSection').hidden=false;
   $('previewSection').scrollIntoView({behavior:'smooth',block:'start'});
-  notice(outputs.length+' Bestellungen können geprüft werden. Anschriften und Mengen vor dem Import vergleichen.');
+  const totals=['qty_kombi','qty_matrosen','qty_seemann'].map(k=>outputs.reduce((n,o)=>n+o[k],0));notice(outputs.length+' Bestellpositionen · '+totals[0]+' Kombi · '+totals[1]+' Matrosen · '+totals[2]+' Seemann. Anschriften und Mengen kontrollieren.');
 }
 function parseSource(){
   const text=$('sourceText').value.trim();

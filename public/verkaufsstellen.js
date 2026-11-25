@@ -16,8 +16,9 @@ function state(text,error=false){
 function info(text,error=false){
  const el=$('salesAuthStatus');el.textContent=text;el.className='alert '+(error?'error':'success');
 }
+function renderDistribution(data){const root=$('distributionRows');root.replaceChildren();const kinds=['Kombi','Matrosen','Seemann'];const add=(label,values)=>{const row=make('tr');[label,...values,values.reduce((a,b)=>a+b,0)].forEach(v=>row.append(make('td','',v)));root.append(row);};const grouped=key=>kinds.map(t=>Number((data.distribution||[]).find(x=>x.channel===key&&x.ticket_type===t)?.count||0));add('Bestellungen – zugeordnet',grouped('order'));for(const p of data.points||[])add(p.name,[Number(p.kombi_count),Number(p.matrosen_count),Number(p.seemann_count)]);if(!(data.points||[]).some(p=>p.name==='Privat verkauft'))add('Privat verkauft',[0,0,0]);add('Verfügbar',grouped('free'));add('Gesperrt / sonstige',grouped('blocked').map((n,i)=>n+grouped('other')[i]));add('Gesamtbestand',kinds.map(t=>(data.distribution||[]).filter(x=>x.ticket_type===t).reduce((n,x)=>n+Number(x.count),0)));}
 async function loadPoints(){
- const data=await api('/api/sales-points');points=data.points||[];
+ const data=await api('/api/sales-points');points=data.points||[];renderDistribution(data);
  const select=$('salesPointSelect');select.replaceChildren();
  const empty=make('option','','Bitte Verkaufsstelle auswählen');empty.value='';select.append(empty);
  for(const p of points){const opt=make('option','',p.name+' · '+p.ticket_count+' Tickets');opt.value=p.id;select.append(opt);}
@@ -25,6 +26,7 @@ async function loadPoints(){
  select.value=currentId;
  $('salesPointStats').textContent=currentId?'Verfügbar für die Ausgabe: '+data.free+' Hardtickets.':'Verfügbar für die Ausgabe: '+data.free+' Hardtickets. Erst Verkaufsstelle auswählen.';
  await loadStock();
+ updateMode();
 }
 async function loadStock(){
  const listing=$('salesStockList');listing.replaceChildren();
@@ -41,8 +43,8 @@ async function loadStock(){
 }
 function selectedMode(){return document.querySelector('[name=salesMode]:checked')?.value||'issue';}
 function updateMode(){
- currentMode=selectedMode();
- $('salesModeHint').textContent=currentMode==='issue'?
+ currentMode=selectedMode();const privateSale=points.find(x=>x.id===currentId)?.name==='Privat verkauft';
+ $('salesModeHint').textContent=privateSale?(currentMode==='issue'?'Jeder QR-Code zählt einmal als privat verkauft.':'Nur tatsächlich zurückerhaltene Tickets wieder freigeben.') :currentMode==='issue'?
  'Jeder gescannte QR-Code wird als Bestand dieser Verkaufsstelle gespeichert. Keine Verkauf- oder Einlassbuchung.':
  'Nur Tickets, die dieser Verkaufsstelle zugeordnet sind, werden bei Rückgabe wieder freigegeben.';
  state(currentMode==='issue'?'Bereit für die Ausgabe.':'Bereit für die Rücknahme.');
@@ -55,8 +57,8 @@ async function processCode(value){
  scanBusy=true;
  try{
   const result=await api('/api/sales-points/'+currentId+'/'+mode,'POST',{code:raw});
-  state('✓ '+result.ticket_type+' · '+(mode==='issue'?'an '+p.name+' ausgegeben':'von '+p.name+' zurückgenommen')+'.');
   await loadPoints();
+  state('✓ '+result.ticket_type+' · '+(mode==='issue'?(p.name==='Privat verkauft'?'privat verkauft':'an '+p.name+' ausgegeben'):'von '+p.name+' zurückgenommen')+'.');
  }catch(e){state('Nicht gespeichert: '+e.message,true);}
  finally{scanBusy=false;}
 }
@@ -116,7 +118,7 @@ async function init(){
  }catch(e){info('Zugang oder Datenbank nicht verfügbar: '+e.message,true);return;}
  $('salesPointSelect').addEventListener('change',async e=>{
   stopCamera();currentId=e.target.value;
-  try{await loadStock();}catch(err){state(err.message,true);}
+  try{await loadStock();updateMode();}catch(err){state(err.message,true);}
  });
  $('privateChannel').addEventListener('click',async()=>{try{stopCamera();const result=await api('/api/sales-points','POST',{name:'Privat verkauft'});currentId=result.point.id;await loadPoints();state('Privat verkauft ausgewählt.');}catch(e){state(e.message,true);}});
  $('salesPointForm').addEventListener('submit',async e=>{

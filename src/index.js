@@ -199,7 +199,7 @@ async function handleApi(request,env,actor){
   }
   if(method==='GET'&&path==='/api/sales-points'){
     await ensureSalesPointSchema(db);
-    const [points,totals]=await Promise.all([
+    const [points,totals,distribution]=await Promise.all([
       db.prepare(`SELECT p.id,p.name,
         COUNT(CASE WHEN s.status='at_point' THEN 1 END) AS ticket_count,
         COUNT(CASE WHEN s.status='at_point' AND t.ticket_type='Kombi' THEN 1 END) AS kombi_count,
@@ -210,9 +210,10 @@ async function handleApi(request,env,actor){
         GROUP BY p.id,p.name ORDER BY p.name COLLATE NOCASE`).all(),
       db.prepare(`SELECT COUNT(*) AS free FROM tickets t WHERE t.status='available'
         AND t.order_id IS NULL AND t.admitted_at IS NULL
-        AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')`).first()
+        AND NOT EXISTS(SELECT 1 FROM sales_point_tickets s WHERE s.ticket_code=t.code AND s.status='at_point')`).first(),
+      db.prepare(`SELECT t.ticket_type,CASE WHEN t.status IN ('blocked','void') THEN 'blocked' WHEN t.order_id IS NOT NULL THEN 'order' WHEN s.status='at_point' THEN 'external' WHEN t.status='available' AND t.admitted_at IS NULL THEN 'free' ELSE 'other' END AS channel, COUNT(*) AS count FROM tickets t LEFT JOIN sales_point_tickets s ON s.ticket_code=t.code GROUP BY t.ticket_type,channel`).all()
     ]);
-    return json({points:points.results||[],free:totals?.free||0});
+    return json({points:points.results||[],free:totals?.free||0,distribution:distribution.results||[]});
   }
   if(method==='POST'&&path==='/api/sales-points'){
     await ensureSalesPointSchema(db);
