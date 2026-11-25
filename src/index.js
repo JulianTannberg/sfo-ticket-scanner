@@ -329,13 +329,29 @@ async function handleApi(request,env,actor){
   if(method==='POST'&&path==='/api/envelopes/status'){
     await ensureEnvelopeSchema(db);
     const b=await readBody(request), action=clean(b.action,20);
-    if(!['printed','unprinted','packed','unpacked','demo_printed'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
+    if(!['printed','unprinted','packed','unpacked','demo_printed','sent'].includes(action))fail(400,'Unbekannter Umschlagstatus.');
     const ids=Array.isArray(b.ids)?[...new Set(b.ids)]:[];
     if(ids.length===0||ids.length>100||ids.some(id=>typeof id!=='string'||!/^[0-9a-f-]{36}$/.test(id)))fail(400,'Ungültige Bestellauswahl.');
     if(role==='dispatch'){
       const placeholders=ids.map(()=>'?').join(',');
       const demo=await db.prepare(`SELECT 1 FROM orders WHERE id IN (${placeholders}) AND sales_channel='internal_test' LIMIT 1`).bind(...ids).first();
       if(demo)fail(403,'Testbestellungen dürfen nicht über den Versandzugang bearbeitet werden.');
+    }
+    if(action==='sent'){
+      if(ids.length>80)fail(400,'Maximal 80 Bestellungen pro Versandgruppe.');
+      const marks=ids.map(()=>'?').join(',');
+      const eligible=`id IN (${marks}) AND shipping_status IN ('not_ready','ready')
+        AND payment_status='paid' AND sales_channel<>'internal_test'
+        AND (qty_kombi+qty_matrosen+qty_seemann)>0 AND ${orderCompleteClause()}
+        AND EXISTS(SELECT 1 FROM envelope_progress ep WHERE ep.order_id=orders.id AND ep.printed_at IS NOT NULL AND ep.packed_at IS NOT NULL)`;
+      // Both statements share an atomic D1 batch and identical eligibility checks.
+      const batch=await db.batch([
+        db.prepare(`INSERT INTO audit_events(id,actor_id,action,entity_type,entity_id,metadata_json)
+          SELECT lower(hex(randomblob(16))),?,'order.sent','order',id,'{"bulk":true}' FROM orders WHERE ${eligible}`).bind(actor,...ids),
+        db.prepare(`UPDATE orders SET shipping_status='sent',shipped_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE ${eligible}`).bind(...ids)
+      ]);
+      const changed=batch[1].meta?.changes||0;
+      return json({changed,requested:ids.length,skipped:ids.length-changed});
     }
     if(action!=='printed'&&ids.length!==1)fail(400,'Diese Korrektur nur für eine Bestellung.');
     if(action==='demo_printed'){

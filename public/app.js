@@ -5,7 +5,7 @@ const date=s=>s?new Date(s).toLocaleString('de-DE',{day:'2-digit',month:'2-digit
 let orders=[],current=null,detector=null,cameraStream=null,frame=0,scanBusy=false,scanLast=0,selectedUrls=[],currentTab='orders';
 let userRole='admin';
 let cameraMode='assign';
-let envelopeBatch=[],printPreviewIds=[],envelopeSelection=new Set();
+let envelopeBatch=[],printPreviewIds=[],envelopeSelection=new Set(),shippingSelection=new Set(),shippingBusy=false;
 const names={Kombi:'Kombi',Matrosen:'Matrosen',Seemann:'Seemann'};
 const reviewLabel=s=>({unchecked:'Ungeprüft',open:'Zahlung offen',paid:'Bezahlt',partial:'Teilweise bezahlt',refunded:'Erstattet',partial_refund:'Teilweise erstattet'})[s]||'Ungeprüft';
 function alertUser(message,type='warning'){$('systemAlert').textContent=message;$('systemAlert').className='alert '+type;}
@@ -163,6 +163,8 @@ function printEnvelope(lines){
 const envelopeLines=e=>[e.full_name,e.address_line1,e.address_line2,[e.postal_code,e.city].filter(Boolean).join(' ')].filter(Boolean);
 function envelopeDone(e){return Number(e.scanned_kombi)===Number(e.qty_kombi)&&Number(e.scanned_matrosen)===Number(e.qty_matrosen)&&Number(e.scanned_seemann)===Number(e.qty_seemann)
   &&Number(e.qty_kombi)+Number(e.qty_matrosen)+Number(e.qty_seemann)>0;}
+function eligibleForShipping(e){return e.sales_channel!=='internal_test'&&e.payment_status==='paid'&&['not_ready','ready'].includes(e.shipping_status)&&!!e.printed_at&&!!e.packed_at&&envelopeDone(e);}
+function updateShippingControls(){const eligible=envelopeBatch.filter(eligibleForShipping);const selected=eligible.filter(e=>shippingSelection.has(e.id));$('shippingCount').textContent=eligible.length+' versandfertig · '+selected.length+' ausgewählt';$('selectShipping').disabled=shippingBusy||!eligible.length;$('clearShipping').disabled=shippingBusy||!selected.length;$('confirmShipping').disabled=shippingBusy||!selected.length;}
 function envelopeStatus(e){
   if(e.shipping_status==='sent'||e.shipping_status==='handed_over')return 'Versendet';
   if(e.packed_at)return 'Verpackt · noch nicht versendet';
@@ -175,8 +177,9 @@ async function loadEnvelopeBatch(){
     const data=await api('/api/envelopes');
     envelopeBatch=data.envelopes||[];
     printPreviewIds=[];envelopeSelection=new Set(envelopeBatch.filter(e=>!e.printed_at&&['not_ready','ready'].includes(e.shipping_status)).map(e=>e.id));
-    renderEnvelopeQueue();
+    shippingSelection=new Set();renderEnvelopeQueue();
   }catch(e){
+    envelopeBatch=[];shippingSelection.clear();$('envelopeList').replaceChildren();updateShippingControls();
     $('bulkState').textContent='Packliste momentan nicht verfügbar: '+e.message;
     $('printAllEnvelopes').disabled=true;
     $('confirmEnvelopePrinted').disabled=true;
@@ -192,7 +195,7 @@ function renderEnvelopeQueue(){
   $('selectPendingEnvelopes').disabled=!pending.length;
   $('clearEnvelopeSelection').disabled=!pending.length;
   $('confirmEnvelopePrinted').disabled=!printPreviewIds.length;
-  const list=$('envelopeList');list.replaceChildren();
+  updateShippingControls();const list=$('envelopeList');list.replaceChildren();
   if(!envelopeBatch.length){list.innerHTML='<p class="quiet">Noch keine Bestellungen vorhanden.</p>';return;}
   for(const e of envelopeBatch){
     const canPrint=!e.printed_at&&['not_ready','ready'].includes(e.shipping_status);
@@ -213,6 +216,12 @@ function renderEnvelopeQueue(){
         $('printAllEnvelopes').disabled=!envelopeBatch.some(x=>!x.printed_at&&envelopeSelection.has(x.id));
       });
       label.append(cb,document.createTextNode(' Zum Druck / zur Druckbestätigung auswählen'));actions.append(label);
+    }
+    if(eligibleForShipping(e)){
+      const label=document.createElement('label');label.className='printselect';
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=shippingSelection.has(e.id);cb.disabled=shippingBusy;
+      cb.addEventListener('change',()=>{if(cb.checked)shippingSelection.add(e.id);else shippingSelection.delete(e.id);updateShippingControls();});
+      label.append(cb,document.createTextNode(' Für Sammelversand auswählen'));actions.append(label);
     }
     const open=document.createElement('button');open.type='button';open.className='secondary smallbtn';open.textContent='Bestellung öffnen';
     open.addEventListener('click',()=>selectOrder(e.id));actions.append(open);
@@ -274,6 +283,22 @@ async function confirmPrintedEnvelopes(){
   }catch(e){alertUser('Nicht alle Druckbestätigungen abgeschlossen: '+e.message,'error');await loadEnvelopeBatch();}
 }
 
+async function confirmBulkShipping(){
+  if(shippingBusy)return;
+  const ids=envelopeBatch.filter(e=>eligibleForShipping(e)&&shippingSelection.has(e.id)).map(e=>e.id);
+  if(!ids.length||!confirm('Sind alle '+ids.length+' ausgewählten Sendungen tatsächlich verschickt worden? Nur diese werden als versendet gespeichert.'))return;
+  shippingBusy=true;renderEnvelopeQueue();
+  let changed=0,skipped=0,error=null;
+  try{
+    for(let i=0;i<ids.length;i+=80){
+      const result=await api('/api/envelopes/status','POST',{action:'sent',ids:ids.slice(i,i+80)});
+      changed+=Number(result.changed);skipped+=Number(result.skipped);
+    }
+  }catch(e){error=e;}
+  finally{shippingBusy=false;await loadEnvelopeBatch();await Promise.allSettled([listOrders(),overview()]);}
+  if(error)alertUser(changed+' Sendungen bestätigt. Weitere Vorgänge nicht bestätigt: '+error.message+' Bitte aktuellen Stand prüfen.','error');
+  else alertUser(changed+' Sendungen als versendet gespeichert.'+(skipped?' '+skipped+' nicht geändert (Status inzwischen geändert).':''),skipped?'warning':'success');
+}
 function checkState(message,error=false){
   $('checkState').textContent=message;
   $('checkState').style.color=error?'#f6a9a2':'#c9efd9';
@@ -429,6 +454,9 @@ async function init(){
   $('checkEnvelopes').addEventListener('click',loadEnvelopeBatch);
   $('printAllEnvelopes').addEventListener('click',printSelectedEnvelopes);
   $('confirmEnvelopePrinted').addEventListener('click',confirmPrintedEnvelopes);
+  $('selectShipping').addEventListener('click',()=>{shippingSelection=new Set(envelopeBatch.filter(eligibleForShipping).map(e=>e.id));renderEnvelopeQueue();});
+  $('clearShipping').addEventListener('click',()=>{shippingSelection.clear();renderEnvelopeQueue();});
+  $('confirmShipping').addEventListener('click',confirmBulkShipping);
   $('selectPendingEnvelopes').addEventListener('click',()=>{envelopeSelection=new Set(envelopeBatch.filter(e=>!e.printed_at&&['not_ready','ready'].includes(e.shipping_status)).map(e=>e.id));renderEnvelopeQueue();});
   $('clearEnvelopeSelection').addEventListener('click',()=>{envelopeSelection.clear();renderEnvelopeQueue();});
   $('printThreeSamples').addEventListener('click',()=>printPages([
